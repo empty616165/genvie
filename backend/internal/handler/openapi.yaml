@@ -5041,6 +5041,12 @@ components:
                 connected: { type: boolean }
                 repository: { type: string }
                 deployment: { type: string }
+                githubProxy:
+                  type: string
+                  description: 实际生效的 GitHub 加速前缀，仅 githubSource=gh_proxy 时使用
+                imageMirror:
+                  type: string
+                  description: 实际生效的容器镜像源主机名，仅 imageSource=nju 时使用
                 currentVersion: { type: string }
                 updateAvailable: { type: boolean }
                 sources: { $ref: "#/components/schemas/SystemUpdateSources" }

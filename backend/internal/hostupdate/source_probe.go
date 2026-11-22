@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"strings"
@@ -23,7 +24,7 @@ func (m *Manager) TestSources() (Status, error) {
 	m.state.SourceProbe = &SourceProbe{
 		ID: randomID(), Status: "running", Sources: sources, StartedAt: time.Now().UTC(),
 		Checks: []Check{
-			{Key: "release", Label: "GitHub Release 版本列表", Status: "pending"},
+			{Key: "release", Label: "GitHub 出口与 Release 版本列表", Status: "pending"},
 			{Key: "compose", Label: "Compose 下载与配置校验", Status: "pending"},
 			{Key: "updater", Label: "Host Updater 校验清单", Status: "pending"},
 			{Key: "backend", Label: "Backend 镜像清单", Status: "pending"},
@@ -40,6 +41,9 @@ func (m *Manager) TestSources() (Status, error) {
 }
 
 func (m *Manager) runSourceProbe(sources Sources) {
+	// 先验证所选 GitHub 出口本身可用。公共加速域名失效时（例如整站 403），
+	// 后续每项都会以不同错误失败，管理员难以判断根因在出口而非版本或镜像。
+	egressErr := m.probeProxyEgress(sources)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	release, err := m.latestRelease(ctx, sources)
 	cancel()
@@ -54,11 +58,11 @@ func (m *Manager) runSourceProbe(sources Sources) {
 	m.mu.Lock()
 	m.state.SourceProbe.TargetVersion = release.Version
 	m.mu.Unlock()
-	m.recordProbeCheck(0, release.Version+" · "+sources.description(), nil)
+	m.recordProbeCheck(0, release.Version+" · "+sources.descriptionFor(m), egressErr)
 
 	composePath, err := m.prepareTargetCompose(release.Version, sources)
 	if err == nil {
-		err = m.composeWithImages(composePath, release.Version, sources.images(m.config.Repository, release.Version), time.Minute, nil, "config", "--quiet")
+		err = m.composeWithImages(composePath, release.Version, sources.imagesWithin(m, m.config.Repository, release.Version), time.Minute, nil, "config", "--quiet")
 		_ = os.Remove(composePath)
 	}
 	m.recordProbeCheck(1, "目标版本文件可读取，docker compose config 通过", err)
@@ -71,12 +75,36 @@ func (m *Manager) runSourceProbe(sources Sources) {
 	}
 	m.recordProbeCheck(2, "存在 "+asset+" 的 SHA-256；完整二进制将在更新前下载并校验", err)
 
-	images := sources.images(m.config.Repository, release.Version)
+	images := sources.imagesWithin(m, m.config.Repository, release.Version)
 	for i, image := range []string{images.backend, images.web, images.agent} {
 		err = m.probeImage(image)
 		m.recordProbeCheck(i+3, image+" · linux/"+runtime.GOARCH, err)
 	}
 	m.finishSourceProbe()
+}
+
+// probeProxyEgress 显式验证所选 GitHub 来源能真正返回内容。
+// 只查 Release 列表时，proxy 前缀不可用会伪装成「版本列表失败」，
+// 而镜像检测走的是 docker，与 GitHub 出口无关，最终仍会在更新时失败。
+func (m *Manager) probeProxyEgress(sources Sources) error {
+	if sources.GitHubSource != "gh_proxy" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	response, err := m.githubGet(ctx, "https://raw.githubusercontent.com/"+m.config.Repository+"/main/VERSION", sources, "")
+	if err != nil {
+		return fmt.Errorf("GitHub 加速前缀 %s 不可用：%w", m.proxyPrefix(), err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 1024))
+	if err != nil {
+		return fmt.Errorf("读取 %s 的 VERSION 失败：%w", m.proxyPrefix(), err)
+	}
+	if len(strings.TrimSpace(string(body))) == 0 {
+		return fmt.Errorf("GitHub 加速前缀 %s 返回空内容，疑似被拦截或改写", m.proxyPrefix())
+	}
+	return nil
 }
 
 func (m *Manager) recordProbeCheck(index int, detail string, err error) {

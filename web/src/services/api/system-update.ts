@@ -55,6 +55,10 @@ export type SystemUpdateStatus = {
     connected: boolean;
     repository: string;
     deployment: string;
+    /** 实际生效的 GitHub 加速前缀，仅在 githubSource 为 gh_proxy 时使用。 */
+    githubProxy?: string;
+    /** 实际生效的容器镜像源主机名，仅在 imageSource 为 nju 时使用。 */
+    imageMirror?: string;
     currentVersion: string;
     latestRelease?: SystemUpdateRelease;
     updateAvailable: boolean;

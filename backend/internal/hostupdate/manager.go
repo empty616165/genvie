@@ -1,6 +1,7 @@
 package hostupdate
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -28,20 +29,38 @@ const maxReleaseResponseBytes = 4 << 20
 const DefaultRepository = "empty616165/genvie"
 
 type Config struct {
-	Repository   string
-	InstallDir   string
-	ComposeFile  string
-	EnvFile      string
-	StateDir     string
-	BackupDir    string
-	HealthURL    string
-	GitHubToken  string
-	StableWindow time.Duration
-	StepTimeout  time.Duration
-	BinaryPath   string
-	ServiceName  string
-	SelfUpdate   bool
+	Repository  string
+	InstallDir  string
+	ComposeFile string
+	EnvFile     string
+	StateDir    string
+	BackupDir   string
+	HealthURL   string
+	GitHubToken string
+	// GitHubProxy 是 gh_proxy 来源使用的加速前缀，必须带协议与结尾斜杠。
+	// 公共代理域名会失效或返回 403，宿主机可用 CANVAS_UPDATER_GITHUB_PROXY 覆盖。
+	GitHubProxy string
+	// ImageMirror 是 nju 来源使用的容器镜像仓库主机名。
+	// 可用 CANVAS_UPDATER_IMAGE_MIRROR 指向自建代理或其它透明镜像源。
+	ImageMirror string
+	// ReleaseAttemptTimeout 是单个 GitHub 出口的请求预算，主要用于测试缩短等待。
+	ReleaseAttemptTimeout time.Duration
+	// ImagePullTimeout 是单个镜像的拉取预算。公共镜像源在大层上可能只有
+	// 100~200 KB/s，按三镜像共享 StepTimeout 会必然超时，因此独立配置。
+	ImagePullTimeout time.Duration
+	StableWindow     time.Duration
+	StepTimeout      time.Duration
+	BinaryPath       string
+	ServiceName      string
+	SelfUpdate       bool
 }
+
+// DefaultGitHubProxy 与 DefaultImageMirror 只提供实测可用的回退值；
+// 任一公共代理随时可能限流或下线，正式部署应通过环境变量固定可用地址。
+const (
+	DefaultGitHubProxy = "https://gh-proxy.org/"
+	DefaultImageMirror = "ghcr.nju.edu.cn"
+)
 
 type commandRunner interface {
 	Run(context.Context, string, []string, []string, io.Writer, io.Writer) error
@@ -94,6 +113,20 @@ func NewManager(config Config) (*Manager, error) {
 	}
 	if config.BackupDir == "" {
 		config.BackupDir = filepath.Join(config.InstallDir, "backups")
+	}
+	if config.GitHubProxy == "" {
+		config.GitHubProxy = DefaultGitHubProxy
+	}
+	if config.ImageMirror == "" {
+		config.ImageMirror = DefaultImageMirror
+	}
+	config.GitHubProxy = normalizeProxyPrefix(config.GitHubProxy)
+	config.ImageMirror = normalizeImageHost(config.ImageMirror)
+	if err := validateProxyPrefix(config.GitHubProxy); err != nil {
+		return nil, err
+	}
+	if err := validateImageHost(config.ImageMirror); err != nil {
+		return nil, err
 	}
 	if config.StableWindow <= 0 {
 		config.StableWindow = 30 * time.Second
@@ -179,7 +212,7 @@ func (m *Manager) Check(ctx context.Context) (Status, error) {
 	m.state.Operation.Phase = PhaseChecking
 	m.state.Operation.Error = ""
 	m.state.LatestRelease = nil
-	m.appendLogLocked(PhaseChecking, "正在读取 GitHub Release："+sources.description())
+	m.appendLogLocked(PhaseChecking, "正在读取 GitHub Release："+sources.descriptionFor(m))
 	if err := m.saveStateLocked(); err != nil {
 		m.state = previous
 		status := m.snapshotLocked()
@@ -248,7 +281,7 @@ func (m *Manager) StartUpdate(targetVersion string) (Status, error) {
 		FromVersion:   current,
 		TargetVersion: targetVersion,
 		StartedAt:     &now,
-		Logs:          []LogEntry{{At: now, Phase: PhasePreflight, Message: "开始更新前检查，来源：" + sources.description()}},
+		Logs:          []LogEntry{{At: now, Phase: PhasePreflight, Message: "开始更新前检查，来源：" + sources.descriptionFor(m)}},
 	}
 	if err := m.saveStateLocked(); err != nil {
 		m.state.Operation = previous
@@ -307,13 +340,14 @@ func (m *Manager) runUpdate(fromVersion, targetVersion string, sources Sources) 
 		defer os.Remove(updaterBinary)
 	}
 
-	m.setPhase(PhasePulling, "拉取目标版本镜像："+sources.description())
-	targetImages := sources.images(m.config.Repository, targetVersion)
-	if err := m.composeWithImages(nextCompose, targetVersion, targetImages, m.config.StepTimeout, nil, "pull", "backend", "web", "yingce-agent"); err != nil {
+	m.setPhase(PhasePulling, "拉取目标版本镜像："+sources.descriptionFor(m))
+	targetImages := sources.imagesWithin(m, m.config.Repository, targetVersion)
+	pulledImages, err := m.pullTargetImages(nextCompose, targetVersion, targetImages, sources)
+	if err != nil {
 		m.failWithoutRollback(PhaseFailed, err)
 		return
 	}
-	targetImages, err = m.verifyImages(targetImages)
+	targetImages, err = m.verifyImages(pulledImages)
 	if err != nil {
 		m.failWithoutRollback(PhaseFailed, err)
 		return
@@ -399,6 +433,138 @@ func (m *Manager) runUpdate(fromVersion, targetVersion string, sources Sources) 
 	if updaterBinary != "" && m.config.ServiceName != "" {
 		go m.restartSelf()
 	}
+}
+
+// pullTargetImages 按「所选镜像源 → 官方 ghcr.io」逐镜像拉取目标版本，
+// 返回实际成功拉取的镜像引用（允许混合来源）。
+//
+// 为什么要逐镜像拉取并单独计时：StepTimeout 原先对整个 `docker compose pull`
+// （三个镜像约 467 MB）生效。公共镜像源常在超大层上掉到 100~200 KB/s，按此速率
+// 需要 40 分钟以上，必然撞上 20 分钟上限——这不是抖动，是算不出来。
+//
+// 为什么可以换源：各源的多架构 index digest 完全一致，同一 tag 对应同一份内容。
+// 因此某镜像在所选源拉不动时，改从 ghcr.io 拉同一 digest 不会改变镜像内容；
+// 之后 verifyImages 仍会校验本地仓库摘要。
+func (m *Manager) pullTargetImages(composePath, version string, images deploymentImages, sources Sources) (deploymentImages, error) {
+	chosen := []string{images.backend, images.web, images.agent}
+	names := []string{"backend", "web", "agent"}
+
+	// 所选来源不是 ghcr.io 时，官方直连作为同一 digest 的兜底来源。
+	var fallbackRefs []string
+	if sources.ImageSource != "ghcr" {
+		direct := immutableImageRefs(m.config.Repository, version)
+		fallbackRefs = []string{direct.backend, direct.web, direct.agent}
+	}
+
+	for index := range chosen {
+		err := m.pullImage(chosen[index])
+		if err == nil {
+			continue
+		}
+		if len(fallbackRefs) == 0 || fallbackRefs[index] == chosen[index] {
+			return deploymentImages{}, err
+		}
+		// 鉴权、404、架构不符属于确定性失败，换源也救不回来，直接报错。
+		if !retryableImagePull(err) {
+			return deploymentImages{}, err
+		}
+		m.appendLog(PhasePulling, fmt.Sprintf("%s 镜像在所选源拉取失败，改用 ghcr.io 同一 digest：%s", names[index], firstLine(err.Error())))
+		// 先清掉所选源可能留下的半截引用，避免同一 tag 下内容混杂。
+		m.removeTargetImages(deploymentImages{}.withAt(index, chosen[index]))
+		if fallbackErr := m.pullImage(fallbackRefs[index]); fallbackErr != nil {
+			return deploymentImages{}, fmt.Errorf("%s 镜像：所选源失败（%s）；ghcr.io 兜底也失败（%s）",
+				names[index], firstLine(err.Error()), firstLine(fallbackErr.Error()))
+		}
+		chosen[index] = fallbackRefs[index]
+	}
+
+	result := deploymentImages{backend: chosen[0], web: chosen[1], agent: chosen[2]}
+	if result.backend != images.backend || result.web != images.web || result.agent != images.agent {
+		m.appendLog(PhasePulling, "部分镜像已改用 ghcr.io 获取，部署将使用实际拉取的引用")
+	}
+	return result, nil
+}
+
+// pullImage 拉取单个镜像并单独计时，预算由 ImagePullTimeout 控制。
+func (m *Manager) pullImage(ref string) error {
+	timeout := m.config.ImagePullTimeout
+	if timeout <= 0 {
+		timeout = 45 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	var stderr bytes.Buffer
+	if err := m.runner.Run(ctx, "docker", []string{"pull", ref}, nil, io.Discard, &stderr); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if len(message) > 1000 {
+			message = message[len(message)-1000:]
+		}
+		if message != "" {
+			return fmt.Errorf("docker pull %s：%s", ref, explainDockerFailure(message))
+		}
+		return fmt.Errorf("docker pull %s：%w", ref, err)
+	}
+	return nil
+}
+
+// withAt 构造一个只在指定位置有值的镜像集合，供按需清理单个标签使用。
+func (d deploymentImages) withAt(index int, ref string) deploymentImages {
+	switch index {
+	case 0:
+		d.backend = ref
+	case 1:
+		d.web = ref
+	case 2:
+		d.agent = ref
+	}
+	return d
+}
+
+// retryableImagePull 只匹配可恢复的层写入/传输问题，避免对确定性失败重复拉取。
+func retryableImagePull(err error) bool {
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"unexpected commit digest",
+		"failed precondition",
+		"failed commit on ref",
+		"unexpected eof",
+		"connection reset",
+		"i/o timeout",
+		"tls handshake timeout",
+		"context deadline exceeded",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// removeTargetImages 只删除本次目标标签的本地引用，保留旧版本镜像以供回退。
+func (m *Manager) removeTargetImages(images deploymentImages) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	for _, image := range []string{images.backend, images.web, images.agent} {
+		if strings.TrimSpace(image) == "" {
+			continue
+		}
+		_ = m.runner.Run(ctx, "docker", []string{"image", "rm", "--force", image}, nil, io.Discard, io.Discard)
+	}
+}
+
+func firstLine(message string) string {
+	trimmed := strings.TrimSpace(message)
+	if index := strings.IndexByte(trimmed, '\n'); index >= 0 {
+		return strings.TrimSpace(trimmed[:index])
+	}
+	return trimmed
+}
+
+func (m *Manager) appendLog(phase Phase, message string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.appendLogLocked(phase, message)
+	_ = m.saveStateLocked()
 }
 
 func (m *Manager) failWithoutRollback(phase Phase, err error) {
@@ -492,6 +658,8 @@ func (m *Manager) snapshotLocked() Status {
 		Connected:       true,
 		Repository:      m.config.Repository,
 		Deployment:      "docker-compose-host-updater",
+		GitHubProxy:     m.config.GitHubProxy,
+		ImageMirror:     m.config.ImageMirror,
 		CurrentVersion:  current,
 		LatestRelease:   cloneRelease(m.state.LatestRelease),
 		Checks:          checks,

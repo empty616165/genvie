@@ -28,6 +28,10 @@ export function SystemUpdateSourcesPanel({
     const probing = probe?.status === "running";
     const disabled = busy || pending !== null || !saved || !status?.connected;
     const preset = draft.githubSource === "direct" && draft.imageSource === "ghcr" ? "direct" : draft.githubSource === "gh_proxy" && draft.imageSource === "nju" ? "mirror" : "mixed";
+    // 展示宿主机实际生效的地址，避免页面继续显示已失效的公共域名。
+    const proxyHost = (status?.githubProxy || "").replace(/^https?:\/\//, "").replace(/\/$/, "");
+    const proxyLabel = proxyHost || "GitHub 加速镜像";
+    const mirrorHost = status?.imageMirror || "容器镜像源";
 
     useEffect(() => {
         if (saved) setDraft({ githubSource: saved.githubSource, imageSource: saved.imageSource });
@@ -83,18 +87,18 @@ export function SystemUpdateSourcesPanel({
                 <div className="admin-update-sources-presets" role="group" aria-label="更新来源预设">
                     <button type="button" aria-pressed={preset === "direct"} disabled={disabled} onClick={() => setDraft({ githubSource: "direct", imageSource: "ghcr" })}>
                         <strong>官方直连</strong>
-                        <span>GitHub + GHCR</span>
+                        <span>GitHub + GHCR · 最稳定</span>
                     </button>
                     <button type="button" aria-pressed={preset === "mirror"} disabled={disabled} onClick={() => setDraft({ githubSource: "gh_proxy", imageSource: "nju" })}>
                         <strong>镜像加速</strong>
-                        <span>GH-Proxy + 南京大学镜像源</span>
+                        <span>直连不通时选用</span>
                     </button>
                 </div>
                 <dl className="admin-update-sources-routes">
                     <dt>版本与更新文件</dt>
-                    <dd>{draft.githubSource === "gh_proxy" ? "gh-proxy.com → GitHub API / Release / Raw" : "GitHub API / Release / Raw"}</dd>
+                    <dd>{draft.githubSource === "gh_proxy" ? `${proxyLabel} → GitHub API / Release / Raw` : "GitHub API / Release / Raw"}</dd>
                     <dt>容器镜像</dt>
-                    <dd>{draft.imageSource === "nju" ? "ghcr.nju.edu.cn" : "ghcr.io"} / Backend · Web · Agent</dd>
+                    <dd>{draft.imageSource === "nju" ? mirrorHost : "ghcr.io"} / Backend · Web · Agent</dd>
                 </dl>
                 <details className="admin-update-sources-advanced">
                     <summary>分别设置 GitHub 与容器镜像来源{preset === "mixed" ? " · 当前为混合配置" : ""}</summary>
@@ -107,7 +111,7 @@ export function SystemUpdateSourcesPanel({
                                 disabled={disabled}
                                 options={[
                                     { value: "direct", label: "GitHub 官方直连" },
-                                    { value: "gh_proxy", label: "GH-Proxy · gh-proxy.com" },
+                                    { value: "gh_proxy", label: `GitHub 加速 · ${proxyLabel}` },
                                 ]}
                                 onChange={(githubSource: SystemUpdateSources["githubSource"]) => setDraft((value) => ({ ...value, githubSource }))}
                             />
@@ -120,7 +124,7 @@ export function SystemUpdateSourcesPanel({
                                 disabled={disabled}
                                 options={[
                                     { value: "ghcr", label: "GHCR · ghcr.io" },
-                                    { value: "nju", label: "南京大学 · ghcr.nju.edu.cn" },
+                                    { value: "nju", label: `容器镜像源 · ${mirrorHost}` },
                                 ]}
                                 onChange={(imageSource: SystemUpdateSources["imageSource"]) => setDraft((value) => ({ ...value, imageSource }))}
                             />

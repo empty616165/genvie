@@ -31,7 +31,53 @@ type githubRelease struct {
 	Prerelease  bool      `json:"prerelease"`
 }
 
+// releaseCandidates 返回 GitHub 请求的尝试顺序。
+// 公共加速前缀与全球匿名请求共用同一份 GitHub API 匿名配额，繁忙时高频 403
+// （API rate limit exceeded）。版本发现、Compose 与更新器资产都依赖这条链路，
+// 单出口会把「有更新」误报成「检查失败」。
+//
+// 直连使用本机出口与可选 Token，配额独立且实测更稳，因此当所选来源是直连时
+// 只尝试一次；选了加速前缀时先按所选来源尝试一次，失败再退回直连。
+func releaseCandidates(sources Sources) []Sources {
+	if sources.GitHubSource != "gh_proxy" {
+		return []Sources{sources}
+	}
+	return []Sources{
+		sources,
+		{GitHubSource: "direct", ImageSource: sources.ImageSource},
+	}
+}
+
+// releaseAttemptTimeout 是单个 GitHub 出口的尝试预算。
+// 直连与代理都会在几十秒内给出结果（限流是立即返回 403），
+// 因此不需要按「传输大文件」的量级留时间。
+func (m *Manager) releaseAttemptTimeout() time.Duration {
+	if m.config.ReleaseAttemptTimeout > 0 {
+		return m.config.ReleaseAttemptTimeout
+	}
+	return 45 * time.Second
+}
+
 func (m *Manager) latestRelease(ctx context.Context, sources Sources) (*Release, error) {
+	var failures []string
+	for _, candidate := range releaseCandidates(sources) {
+		// 每个出口单独计时：共用同一个 ctx 时，首个出口把预算耗尽后
+		// 回退分支会立刻以 deadline exceeded 失败，等于回退从未生效。
+		attemptCtx, cancel := context.WithTimeout(ctx, m.releaseAttemptTimeout())
+		release, err := m.latestReleaseWithin(attemptCtx, candidate)
+		cancel()
+		if err == nil {
+			return release, nil
+		}
+		failures = append(failures, candidate.descriptionFor(m)+"："+firstLine(err.Error()))
+	}
+	if len(failures) == 1 {
+		return nil, errors.New(failures[0])
+	}
+	return nil, errors.New("所有 GitHub 出口均失败 —— " + strings.Join(failures, "；"))
+}
+
+func (m *Manager) latestReleaseWithin(ctx context.Context, sources Sources) (*Release, error) {
 	url := "https://api.github.com/repos/" + m.config.Repository + "/releases?per_page=30"
 	response, err := m.githubGet(ctx, url, sources, "application/vnd.github+json")
 	if err != nil {
@@ -86,29 +132,35 @@ func (m *Manager) prepareTargetCompose(targetVersion string, sources Sources) (s
 	var data []byte
 	var failures []string
 	for _, url := range m.targetComposeURLs(targetVersion) {
-		// Release 资产会 302 到 release-assets.githubusercontent.com，该域名在部分网络
-		// 首包明显更慢，45 秒会在重试之后仍不够用。
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		response, err := m.githubGet(ctx, url, sources, "")
-		if err == nil {
-			body, readErr := io.ReadAll(io.LimitReader(response.Body, (2<<20)+1))
-			response.Body.Close()
-			switch {
-			case readErr != nil:
-				err = readErr
-			case len(body) == 0:
-				err = errors.New("目标 Compose 文件为空")
-			case len(body) > 2<<20:
-				err = errors.New("目标 Compose 文件超过允许大小")
-			default:
-				data = body
+		for _, egress := range releaseCandidates(sources) {
+			// Release 资产会 302 到 release-assets.githubusercontent.com，该域名在部分网络
+			// 首包明显更慢，需要较长余量；但每个出口单独计时，避免多候选叠加成
+			// 「两次 URL × 两个出口 × 3 分钟」的长等待。
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			response, err := m.githubGet(ctx, url, egress, "")
+			if err == nil {
+				body, readErr := io.ReadAll(io.LimitReader(response.Body, (2<<20)+1))
+				response.Body.Close()
+				switch {
+				case readErr != nil:
+					err = readErr
+				case len(body) == 0:
+					err = errors.New("目标 Compose 文件为空")
+				case len(body) > 2<<20:
+					err = errors.New("目标 Compose 文件超过允许大小")
+				default:
+					data = body
+				}
 			}
+			cancel()
+			if data != nil {
+				break
+			}
+			failures = append(failures, egress.descriptionFor(m)+"："+err.Error())
 		}
-		cancel()
 		if data != nil {
 			break
 		}
-		failures = append(failures, err.Error())
 	}
 	if data == nil {
 		return "", fmt.Errorf("下载目标 Compose：%s", strings.Join(failures, "；"))
@@ -138,7 +190,14 @@ func (m *Manager) preflight(composePath, targetVersion string, sources Sources) 
 	if err := checkBackupDiskSpace(m.config.BackupDir); err != nil {
 		return err
 	}
-	if err := m.composeWithImages(composePath, targetVersion, sources.images(m.config.Repository, targetVersion), 2*time.Minute, nil, "config", "--quiet"); err != nil {
+	// 无法确定 Docker 数据目录时跳过空间预检：宁可交给 pull 阶段失败，
+	// 也不能因为读不到 docker info 就阻塞全部更新。
+	if dockerDir := m.dockerDataDir(); dockerDir != "" {
+		if err := checkImageDiskSpace(dockerDir); err != nil {
+			return err
+		}
+	}
+	if err := m.composeWithImages(composePath, targetVersion, sources.imagesWithin(m, m.config.Repository, targetVersion), 2*time.Minute, nil, "config", "--quiet"); err != nil {
 		return fmt.Errorf("目标 Compose 校验失败：%w", err)
 	}
 	current, err := m.currentVersion()
@@ -209,6 +268,18 @@ func (m *Manager) prepareUpdaterBinary(targetVersion string, sources Sources) (s
 
 func (m *Manager) downloadReleaseAsset(url string, limit int64, sources Sources) ([]byte, error) {
 	// 二进制可达数 MB，经代理镜像时吞吐可能只有数十 KB/s，按 5 分钟给足余量。
+	var failures []string
+	for _, egress := range releaseCandidates(sources) {
+		data, err := m.downloadReleaseAssetWithin(url, limit, egress)
+		if err == nil {
+			return data, nil
+		}
+		failures = append(failures, egress.descriptionFor(m)+"："+err.Error())
+	}
+	return nil, errors.New(strings.Join(failures, "；"))
+}
+
+func (m *Manager) downloadReleaseAssetWithin(url string, limit int64, sources Sources) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	response, err := m.githubGet(ctx, url, sources, "")
@@ -253,6 +324,23 @@ type deploymentImages struct {
 	backend string
 	web     string
 	agent   string
+}
+
+// minImageDiskFreeBytes 是拉取镜像前要求的最小空闲空间。
+// 三个镜像解压后约 1.5 GiB，留出余量避免层写入被截断。
+const minImageDiskFreeBytes = 4 << 30
+
+// dockerDataDir 从 Docker 自身读取数据根目录。
+// 读取失败时返回空串：此时无法确定真实数据目录，硬套默认路径可能误拦截更新，
+// 因此调用方应跳过该预检而不是猜测。
+func (m *Manager) dockerDataDir() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var output, stderr bytes.Buffer
+	if err := m.runner.Run(ctx, "docker", []string{"info", "--format", "{{.DockerRootDir}}"}, nil, &output, &stderr); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(output.String())
 }
 
 func immutableImageRefs(repository, version string) deploymentImages {
@@ -306,11 +394,30 @@ func (m *Manager) composeWithImages(composePath, imageTag string, images deploym
 			message = message[len(message)-1000:]
 		}
 		if message != "" {
-			return fmt.Errorf("docker compose %s：%s", strings.Join(arguments, " "), message)
+			return fmt.Errorf("docker compose %s：%s", strings.Join(arguments, " "), explainDockerFailure(message))
 		}
 		return fmt.Errorf("docker compose %s：%w", strings.Join(arguments, " "), err)
 	}
 	return nil
+}
+
+// explainDockerFailure 把常见的不可直接执行的 Docker 报错翻译成处理动作。
+// 原文过长且夹带层哈希，管理员无法据此判断该清空间、换源还是修链路。
+func explainDockerFailure(message string) string {
+	lowered := strings.ToLower(message)
+	switch {
+	case strings.Contains(lowered, "unexpected commit digest") || strings.Contains(lowered, "failed commit on ref") || strings.Contains(lowered, "failed precondition"):
+		return message + "\n\n本地镜像层内容校验失败，通常是上一次拉取中断留下不完整层或磁盘空间不足。处理：docker image rm 目标版本镜像 → docker system prune -f → 确认 Docker 数据目录剩余空间充足后重试；不要使用 docker system prune -a，否则会删除可回退的旧版本镜像。"
+	case strings.Contains(lowered, "no space left on device"):
+		return message + "\n\nDocker 数据目录空间不足。处理：清理无用镜像与构建缓存并确认剩余空间后重试。"
+	case strings.Contains(lowered, "unauthorized") || strings.Contains(lowered, "denied"):
+		return message + "\n\n镜像仓库拒绝访问。处理：确认镜像包可见性，或在宿主机执行 docker login 后重试。"
+	case strings.Contains(lowered, "manifest unknown") || strings.Contains(lowered, "not found"):
+		return message + "\n\n镜像或版本不存在。处理：确认该 Release 的镜像已发布并同步到所选镜像源。"
+	case strings.Contains(lowered, "no matching manifest for"):
+		return message + "\n\n所选镜像源缺少当前 CPU 架构的镜像。处理：确认目标版本的镜像已构建 linux/amd64 或 linux/arm64。"
+	}
+	return message
 }
 
 func composeProjectName(installDir string) string {

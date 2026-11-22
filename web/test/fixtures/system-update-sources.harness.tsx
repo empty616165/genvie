@@ -104,6 +104,8 @@ beforeEach(() => {
         connected: true,
         repository: "empty616165/genvie",
         deployment: "docker-compose-host-updater",
+        githubProxy: "https://gh-proxy.org/",
+        imageMirror: "ghcr.nju.edu.cn",
         currentVersion: "v1.0.0",
         latestRelease: availableRelease(),
         updateAvailable: true,
@@ -148,8 +150,8 @@ afterAll(async () => {
 test("未保存来源阻止检测和更新，持久化后必须重新检查版本", async () => {
     await mount();
     expect(button("开始更新").disabled).toBe(false);
-    await click("镜像加速GH-Proxy + 南京大学镜像源");
-    expect(host.textContent).toContain("gh-proxy.com → GitHub");
+    await click("镜像加速直连不通时选用");
+    expect(host.textContent).toContain("gh-proxy.org → GitHub");
     expect(button("检查更新").disabled).toBe(true);
     expect(button("开始更新").disabled).toBe(true);
     expect(button("测试连通性").disabled).toBe(true);
@@ -166,7 +168,7 @@ test("未保存来源阻止检测和更新，持久化后必须重新检查版�
 test("来源检测异步轮询，运行中锁定控件，失败详情可见", async () => {
     await mount();
     await click("测试连通性");
-    expect(button("官方直连GitHub + GHCR").disabled).toBe(true);
+    expect(button("官方直连GitHub + GHCR · 最稳定").disabled).toBe(true);
     expect(button("检查更新").disabled).toBe(true);
     server = { ...server, sourceProbe: { ...server.sourceProbe!, status: "failed", checks: [{ key: "backend", label: "Backend 镜像清单", status: "failed", detail: "registry unavailable", blocking: false }] } };
     await act(async () => {
@@ -175,12 +177,12 @@ test("来源检测异步轮询，运行中锁定控件，失败详情可见", as
     await settle();
     expect(host.textContent).toContain("registry unavailable");
     expect(host.textContent).toContain("检测未通过");
-    expect(button("官方直连GitHub + GHCR").disabled).toBe(false);
+    expect(button("官方直连GitHub + GHCR · 最稳定").disabled).toBe(false);
 });
 
 test("保存失败保留草稿，不假装配置已持久化", async () => {
     await mount();
-    await click("镜像加速GH-Proxy + 南京大学镜像源");
+    await click("镜像加速直连不通时选用");
     failSave = true;
     await click("保存来源");
     expect(server.sources).toEqual({ githubSource: "direct", imageSource: "ghcr" });
@@ -191,7 +193,7 @@ test("保存失败保留草稿，不假装配置已持久化", async () => {
 
 test("两类来源可以独立混合选择", async () => {
     await mount();
-    await click("镜像加速GH-Proxy + 南京大学镜像源");
+    await click("镜像加速直连不通时选用");
     const details = host.querySelector("details")!;
     await act(async () => {
         details.open = true;
@@ -216,7 +218,7 @@ test("更新器不提供配置时来源控件不可用", async () => {
     server.sources = undefined;
     await mount();
     expect(host.textContent).toContain("当前更新器未提供来源配置");
-    expect(button("官方直连GitHub + GHCR").disabled).toBe(true);
+    expect(button("官方直连GitHub + GHCR · 最稳定").disabled).toBe(true);
     expect(button("保存来源").disabled).toBe(true);
     expect(button("测试连通性").disabled).toBe(true);
 });

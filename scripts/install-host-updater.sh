@@ -6,8 +6,11 @@ INSTALL_DIR="${INSTALL_DIR:-/opt/open-ai-canvas}"
 # 发布仓库：Release 资产中的 Host Updater 二进制与 SHA256SUMS 都从这里下载。
 REPOSITORY="${REPOSITORY:-empty616165/genvie}"
 SOCKET_DIR="${CANVAS_UPDATER_SOCKET_DIR:-/run/open-ai-canvas-updater}"
-# 可为空的 GitHub 加速前缀，例如 https://gh-proxy.com/。
+# 可为空的 GitHub 加速前缀，例如 https://gh-proxy.org/。
+# 留空时更新器 env 写入 https://gh-proxy.org/，与 hostupdate.DefaultGitHubProxy 保持一致。
 GITHUB_PROXY="${GITHUB_PROXY:-}"
+# 容器镜像源主机名，例如 ghcr.nju.edu.cn 或自建镜像；与 hostupdate.DefaultImageMirror 一致。
+IMAGE_MIRROR="${IMAGE_MIRROR:-ghcr.nju.edu.cn}"
 UPDATER_BIN="/usr/local/bin/open-ai-canvas-host-updater"
 UPDATER_ENV="/etc/open-ai-canvas-updater.env"
 UPDATER_SERVICE="/etc/systemd/system/open-ai-canvas-updater.service"
@@ -29,8 +32,9 @@ require_root() {
     local backend_image web_image
     backend_image="$(sed -n 's/^CANVAS_BACKEND_IMAGE=//p' "${INSTALL_DIR}/.env" | tail -n 1)"
     web_image="$(sed -n 's/^CANVAS_WEB_IMAGE=//p' "${INSTALL_DIR}/.env" | tail -n 1)"
-    [[ "$backend_image" =~ ^(ghcr\.io|ghcr\.nju\.edu\.cn)/[^[:space:]]+@sha256:[a-f0-9]{64}$ ]] || fail "CANVAS_BACKEND_IMAGE 必须固定为 GHCR 或南京大学镜像源 digest"
-    [[ "$web_image" =~ ^(ghcr\.io|ghcr\.nju\.edu\.cn)/[^[:space:]]+@sha256:[a-f0-9]{64}$ ]] || fail "CANVAS_WEB_IMAGE 必须固定为 GHCR 或南京大学镜像源 digest"
+    # 安全属性是「必须固定 digest」，主机名允许自建镜像源（CANVAS_UPDATER_IMAGE_MIRROR）。
+    [[ "$backend_image" =~ ^[^[:space:]/]+/[^[:space:]]+@sha256:[a-f0-9]{64}$ ]] || fail "CANVAS_BACKEND_IMAGE 必须以 @sha256:<64 位十六进制> 固定 digest"
+    [[ "$web_image" =~ ^[^[:space:]/]+/[^[:space:]]+@sha256:[a-f0-9]{64}$ ]] || fail "CANVAS_WEB_IMAGE 必须以 @sha256:<64 位十六进制> 固定 digest"
 }
 
 read_image_tag() {
@@ -70,9 +74,9 @@ install_binary() {
     checksum_file="$(mktemp)"
     release_url="https://github.com/${REPOSITORY}/releases/download/${RELEASE_TAG}"
     download_asset "$temporary" "${release_url}/${asset}" \
-        || fail "下载 ${asset} 失败；可设置 GITHUB_PROXY（例如 https://gh-proxy.com/）后重试"
+        || fail "下载 ${asset} 失败；可设置 GITHUB_PROXY（例如 https://gh-proxy.org/）后重试"
     download_asset "$checksum_file" "${release_url}/SHA256SUMS" \
-        || fail "下载 SHA256SUMS 失败；可设置 GITHUB_PROXY（例如 https://gh-proxy.com/）后重试"
+        || fail "下载 SHA256SUMS 失败；可设置 GITHUB_PROXY（例如 https://gh-proxy.org/）后重试"
     expected="$(awk -v asset="$asset" '$2 == asset { print $1 }' "$checksum_file")"
     [[ "$expected" =~ ^[a-f0-9]{64}$ ]] || fail "Release 校验清单缺少 ${asset}"
     printf '%s  %s\n' "$expected" "$temporary" | sha256sum -c - >/dev/null || fail "Host Updater SHA-256 校验失败"
@@ -98,8 +102,13 @@ ensure_token() {
     [[ ${#token} -ge 32 ]] || fail "CANVAS_UPDATER_TOKEN 长度不足"
     umask 077
     # 显式写入仓库，重装脚本时即可修正旧安装遗留的仓库地址。
-    printf 'CANVAS_UPDATER_TOKEN=%s\nCANVAS_UPDATER_INSTALL_DIR=%s\nCANVAS_UPDATER_SOCKET=%s/updater.sock\nCANVAS_UPDATER_REPOSITORY=%s\n' \
-        "$token" "$INSTALL_DIR" "$SOCKET_DIR" "$REPOSITORY" > "$UPDATER_ENV"
+    # 加速前缀与镜像源同样显式落盘，避免沿用更新器内置的公共默认值；
+    # 未传入加速前缀时写入实测可用的默认值，保证更新器不会退化为直连。
+    local configured_proxy configured_mirror
+    configured_proxy="${GITHUB_PROXY:-https://gh-proxy.org/}"
+    configured_mirror="${IMAGE_MIRROR:-ghcr.nju.edu.cn}"
+    printf 'CANVAS_UPDATER_TOKEN=%s\nCANVAS_UPDATER_INSTALL_DIR=%s\nCANVAS_UPDATER_SOCKET=%s/updater.sock\nCANVAS_UPDATER_REPOSITORY=%s\nCANVAS_UPDATER_GITHUB_PROXY=%s\nCANVAS_UPDATER_IMAGE_MIRROR=%s\n' \
+        "$token" "$INSTALL_DIR" "$SOCKET_DIR" "$REPOSITORY" "$configured_proxy" "$configured_mirror" > "$UPDATER_ENV"
 }
 
 install_service() {

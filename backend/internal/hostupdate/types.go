@@ -79,19 +79,23 @@ type Operation struct {
 }
 
 type Status struct {
-	Sources         *Sources     `json:"sources,omitempty"`
-	SourceProbe     *SourceProbe `json:"sourceProbe,omitempty"`
-	Supported       bool         `json:"supported"`
-	Connected       bool         `json:"connected"`
-	Repository      string       `json:"repository"`
-	Deployment      string       `json:"deployment"`
-	CurrentVersion  string       `json:"currentVersion"`
-	LatestRelease   *Release     `json:"latestRelease,omitempty"`
-	UpdateAvailable bool         `json:"updateAvailable"`
-	Checks          []Check      `json:"checks"`
-	LastBackup      *Backup      `json:"lastBackup,omitempty"`
-	RollbackVersion string       `json:"rollbackVersion,omitempty"`
-	Operation       Operation    `json:"operation"`
+	Sources     *Sources     `json:"sources,omitempty"`
+	SourceProbe *SourceProbe `json:"sourceProbe,omitempty"`
+	Supported   bool         `json:"supported"`
+	Connected   bool         `json:"connected"`
+	Repository  string       `json:"repository"`
+	Deployment  string       `json:"deployment"`
+	// GitHubProxy 与 ImageMirror 是实际生效的出口地址，后台据此显示真实来源，
+	// 而不是写死某个可能已失效的公共域名。
+	GitHubProxy     string    `json:"githubProxy"`
+	ImageMirror     string    `json:"imageMirror"`
+	CurrentVersion  string    `json:"currentVersion"`
+	LatestRelease   *Release  `json:"latestRelease,omitempty"`
+	UpdateAvailable bool      `json:"updateAvailable"`
+	Checks          []Check   `json:"checks"`
+	LastBackup      *Backup   `json:"lastBackup,omitempty"`
+	RollbackVersion string    `json:"rollbackVersion,omitempty"`
+	Operation       Operation `json:"operation"`
 }
 
 type Sources struct {

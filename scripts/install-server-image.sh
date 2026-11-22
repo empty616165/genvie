@@ -13,7 +13,7 @@ IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-ghcr.io/empty616165/genvie-canvas}"
 CANVAS_BACKEND_IMAGE=""
 CANVAS_WEB_IMAGE=""
 COMPOSE_FILE="docker-compose.deploy.yml"
-# 可为空的 GitHub 加速前缀，例如 https://gh-proxy.com/。
+# 可为空的 GitHub 加速前缀，例如 https://gh-proxy.org/。
 GITHUB_PROXY="${GITHUB_PROXY:-}"
 COMPOSE_URL="${COMPOSE_URL:-}"
 UPDATER_INSTALL_URL="${UPDATER_INSTALL_URL:-}"
@@ -220,7 +220,7 @@ download_compose() {
         "$raw_url" \
         "$(with_proxy "$release_url")" \
         "$release_url"; then
-        fail "下载部署配置失败；可使用 GITHUB_PROXY（例如 https://gh-proxy.com/）或直接指定 COMPOSE_URL"
+        fail "下载部署配置失败；可使用 GITHUB_PROXY（例如 https://gh-proxy.org/）或直接指定 COMPOSE_URL"
     fi
     mv "$temporary_file" "$COMPOSE_FILE"
 }
@@ -238,7 +238,7 @@ install_host_updater() {
         "$raw_url" \
         "$(with_proxy "$release_url")" \
         "$release_url"; then
-        fail "下载更新器安装脚本失败；可使用 GITHUB_PROXY（例如 https://gh-proxy.com/）或直接指定 UPDATER_INSTALL_URL"
+        fail "下载更新器安装脚本失败；可使用 GITHUB_PROXY（例如 https://gh-proxy.org/）或直接指定 UPDATER_INSTALL_URL"
     fi
     INSTALL_DIR="$INSTALL_DIR" REPOSITORY="$REPOSITORY" bash "$installer"
     rm -f "$installer"

@@ -24,23 +24,104 @@ func (s Sources) Validate() error {
 	return nil
 }
 
-func (s Sources) description() string {
+// normalizeProxyPrefix 允许管理员只填域名，补齐协议与结尾斜杠。
+func normalizeProxyPrefix(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if !strings.Contains(value, "://") {
+		value = "https://" + value
+	}
+	if !strings.HasSuffix(value, "/") {
+		value += "/"
+	}
+	return value
+}
+
+// validateProxyPrefix 只接受 HTTPS 绝对地址；代理路径由更新器拼接，不能带 query 或 fragment。
+func validateProxyPrefix(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil || parsed.Port() != "" {
+		return fmt.Errorf("GitHub 加速前缀必须是 HTTPS 地址，例如 %s", DefaultGitHubProxy)
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("GitHub 加速前缀不能包含查询参数或片段")
+	}
+	return nil
+}
+
+// normalizeImageHost 接受主机名或含协议的地址，统一成主机名，避免拼出双协议引用。
+func normalizeImageHost(value string) string {
+	value = strings.TrimSpace(value)
+	if parsed, err := url.Parse(value); err == nil && parsed.Hostname() != "" {
+		value = parsed.Hostname()
+	}
+	return strings.Trim(strings.TrimSuffix(value, "/"), " ")
+}
+
+// validateImageHost 只允许纯主机名，避免把任意 URL 拼进镜像引用。
+func validateImageHost(value string) error {
+	if value == "" {
+		return fmt.Errorf("容器镜像源必须是主机名，例如 %s", DefaultImageMirror)
+	}
+	if strings.ContainsAny(value, "/:@ ") {
+		return fmt.Errorf("容器镜像源必须是主机名，例如 %s", DefaultImageMirror)
+	}
+	return nil
+}
+
+func (m *Manager) proxyPrefix() string   { return m.config.GitHubProxy }
+func (m *Manager) imageRegistry() string { return m.config.ImageMirror }
+
+// proxyHost 返回加速前缀的主机名，重定向校验用它判断是否仍在同一代理域内。
+func (m *Manager) proxyHost() string {
+	parsed, err := url.Parse(m.config.GitHubProxy)
+	if err != nil {
+		return ""
+	}
+	return parsed.Hostname()
+}
+
+// sameRegistrableDomain 允许代理在同一站点内部跳转（父域与子域互换），
+// 例如 gh-proxy.net 与 ww19.gh-proxy.net；其余一律拒绝。
+// 刻意不用“最后两段相等”的写法：对 .com.cn、.co.uk 这类多段公共后缀，
+// 那会把 evil.com.cn 误判成与 gh-proxy.com.cn 同域，放行跨站重定向。
+func sameRegistrableDomain(target, base string) bool {
+	target = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(target), "."))
+	base = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(base), "."))
+	if target == "" || base == "" {
+		return false
+	}
+	if target == base {
+		return true
+	}
+	// 两侧都必须是至少两段的主机名。否则目标为单段名（例如 org）时，
+	// HasSuffix(base, ".org") 会成立，等于把任意同名顶级域都当作同一站点。
+	if strings.Count(target, ".") < 1 || strings.Count(base, ".") < 1 {
+		return false
+	}
+	return strings.HasSuffix(target, "."+base) || strings.HasSuffix(base, "."+target)
+}
+
+func (s Sources) descriptionFor(m *Manager) string {
 	github, registry := "GitHub 直连", "ghcr.io"
 	if s.GitHubSource == "gh_proxy" {
-		github = "gh-proxy.com"
+		github = strings.TrimSuffix(strings.TrimPrefix(m.proxyPrefix(), "https://"), "/")
 	}
 	if s.ImageSource == "nju" {
-		registry = "ghcr.nju.edu.cn"
+		registry = m.imageRegistry()
 	}
 	return github + " / " + registry
 }
 
-func (s Sources) images(repository, version string) deploymentImages {
+func (s Sources) imagesWithin(m *Manager, repository, version string) deploymentImages {
 	images := immutableImageRefs(repository, version)
 	if s.ImageSource == "nju" {
-		images.backend = strings.Replace(images.backend, "ghcr.io/", "ghcr.nju.edu.cn/", 1)
-		images.web = strings.Replace(images.web, "ghcr.io/", "ghcr.nju.edu.cn/", 1)
-		images.agent = strings.Replace(images.agent, "ghcr.io/", "ghcr.nju.edu.cn/", 1)
+		registry := m.imageRegistry()
+		images.backend = strings.Replace(images.backend, "ghcr.io/", registry+"/", 1)
+		images.web = strings.Replace(images.web, "ghcr.io/", registry+"/", 1)
+		images.agent = strings.Replace(images.agent, "ghcr.io/", registry+"/", 1)
 	}
 	return images
 }
@@ -68,7 +149,7 @@ func (m *Manager) SaveSources(sources Sources) (Status, error) {
 	if m.state.Operation.Phase != PhaseManualIntervention {
 		m.state.Operation = Operation{Phase: PhaseIdle, Logs: []LogEntry{}}
 	}
-	m.appendLogLocked(m.state.Operation.Phase, "更新来源已保存，请重新检查版本："+sources.description())
+	m.appendLogLocked(m.state.Operation.Phase, "更新来源已保存，请重新检查版本："+sources.descriptionFor(m))
 	if err := m.saveStateLocked(); err != nil {
 		m.state = previous
 		return m.snapshotLocked(), fmt.Errorf("保存更新来源：%w", err)
@@ -90,7 +171,7 @@ func (m *Manager) githubGet(ctx context.Context, original string, sources Source
 	address := original
 	proxy := sources.GitHubSource == "gh_proxy"
 	if proxy {
-		address = "https://gh-proxy.com/" + original
+		address = m.proxyPrefix() + original
 	}
 	newRequest := func() (*http.Request, error) {
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
@@ -110,6 +191,10 @@ func (m *Manager) githubGet(ctx context.Context, original string, sources Source
 		return request, nil
 	}
 	client := *m.httpClient
+	proxyHost := ""
+	if proxy {
+		proxyHost = m.proxyHost()
+	}
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {
 			return errors.New("更新资源重定向次数过多")
@@ -120,8 +205,10 @@ func (m *Manager) githubGet(ctx context.Context, original string, sources Source
 		}
 		if proxy {
 			next.Header.Del("Authorization")
-			if host != "gh-proxy.com" {
-				return fmt.Errorf("%w：镜像源重定向离开 gh-proxy.com，请检查来源或切换直连", errRedirectRejected)
+			// 公共代理常见行为是 302 到自己的子域名（例如 ww19.gh-proxy.net），
+			// 因此允许同一父域下的跳转，但不允许跳到无关第三方。
+			if !sameRegistrableDomain(host, proxyHost) {
+				return fmt.Errorf("%w：镜像源重定向离开 %s，请检查来源或切换直连", errRedirectRejected, proxyHost)
 			}
 		} else {
 			if host != "api.github.com" {

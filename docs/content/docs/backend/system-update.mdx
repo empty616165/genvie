@@ -18,17 +18,97 @@ description: Host Updater、Release 检查、数据库备份迁移、健康验�
 | 预设 | GitHub 版本与更新文件 | 容器镜像 |
 | --- | --- | --- |
 | 官方直连（默认） | GitHub API、Release、Raw | `ghcr.io` |
-| 镜像加速 | `https://gh-proxy.com/` 加原始 HTTPS 地址 | `ghcr.nju.edu.cn` |
+| 镜像加速 | GitHub 加速前缀（默认 `https://gh-proxy.org/`）加原始 HTTPS 地址 | 容器镜像源（默认 `ghcr.nju.edu.cn`） |
 
 展开“分别设置 GitHub 与容器镜像来源”可使用混合配置。GitHub 来源覆盖 Release 列表、目标版本 Compose、Host Updater 二进制和 `SHA256SUMS`；容器来源覆盖 backend、web、yingce-agent，迁移服务复用 backend 镜像。
 
-来源配置保存在宿主机更新器的 `state.json`，独立于部署 `.env`，重启和应用回退不会重置选择。保存新来源会清除上次版本检查及来源检测结果。检查、检测、更新和回退互斥，更新任务记录并固定自己的来源快照；请求失败不会自动切换到其他来源。GitHub Token 只用于官方 API 直连，不发送给 GH-Proxy。
+两个地址都由宿主机环境变量决定，页面显示的是**实际生效值**而不是写死的域名：
+
+| 变量 | 作用 | 默认值 |
+| --- | --- | --- |
+| `CANVAS_UPDATER_GITHUB_PROXY` | `gh_proxy` 来源使用的加速前缀，必须为 HTTPS | `https://gh-proxy.org/` |
+| `CANVAS_UPDATER_IMAGE_MIRROR` | `nju` 来源使用的容器镜像仓库主机名 | `ghcr.nju.edu.cn` |
+| `CANVAS_UPDATER_IMAGE_PULL_TIMEOUT` | 单个镜像的拉取预算，超时后会回退 `ghcr.io` | `45m` |
+
+公共加速域名会失效或被限流（例如 `gh-proxy.com` 已对整站返回 403；`gh-proxy.org` 的 GitHub API 与全球匿名请求共用同一份匿名配额，繁忙时约半数请求直接返回 403 `API rate limit exceeded`），镜像源也可能在传输大层时中断。任一公共地址不可用时，用上面两个变量指向自建代理或自建镜像源，然后 `systemctl restart open-ai-canvas-updater`。把某个第三方公共地址当作长期保证是不可靠的；能自己控制的出口才是稳定解。
+
+版本列表、目标 Compose 和更新器资产都会按「所选来源 → 官方直连」的顺序尝试。直连使用本机出口与可选 `CANVAS_UPDATER_GITHUB_TOKEN`，配额独立，所以即使加速前缀被限流也能完成版本发现；错误信息会同时列出两条出口各自的失败原因。
+
+**建议**：如果服务器能直连 GitHub（`api.github.com` 与 `github.com` 可达），保持默认「官方直连」比任何公共加速域名更稳定；只有当直连确实不通时才改用加速前缀，并优先指向自建代理。
+
+来源配置保存在宿主机更新器的 `state.json`，独立于部署 `.env`，重启和应用回退不会重置选择。保存新来源会清除上次版本检查及来源检测结果。检查、检测、更新和回退互斥，更新任务记录并固定自己的来源快照。GitHub 出口在所选来源失败时会回退到官方直连，但不会改用其他第三方代理。容器镜像同理：所选镜像源拉不动某个镜像时回退到 `ghcr.io` 的同一 digest，不会跳到别的第三方镜像源；GitHub Token 只用于官方 API 直连，不发送给 GH-Proxy。
 
 “测试连通性”在宿主机异步执行，页面关闭后仍会继续。检测会查询目标 Release、下载并校验 Compose 配置、验证当前 CPU 架构的更新器校验条目，并读取三个镜像的多架构清单，确认包含当前 `linux/amd64` 或 `linux/arm64`。每项单独显示失败详情，HTTP 403/429 提示拒绝或限流，404 提示版本不存在或镜像尚未同步。
 
 检测不下载完整容器层，也不安装更新器，不能替代更新前的完整拉取与 SHA-256 校验。正式更新在全部准备成功后才停服；通过所选镜像源拉取后，实际 `仓库@sha256:...` 写入 `.env`，不会再因仓库名固定为 `ghcr.io` 而拒绝南大源摘要。回退恢复原 `.env` 和本地旧镜像，使用 `--pull never`；旧镜像被清理时会报错。
 
+检测会先验证所选 GitHub 出口本身可用，再检查版本、Compose 和更新器校验清单，因此加速前缀整站不可用时会直接体现在「GitHub 出口与 Release 版本列表」一项，而不是伪装成版本或镜像问题。
+
 镜像服务属于第三方公共服务，其可用性以目标服务器实测为准。SHA-256 与 digest 验证内容完整性，不能单独证明第三方源的发布者身份。
+
+## 镜像拉取失败排查
+
+先跑只读诊断，它不修改任何配置，只报告三类出口是否可用：
+
+```bash
+bash scripts/diagnose-update-egress.sh
+# 验证候选加速前缀
+GITHUB_PROXY=https://your-proxy.example.com/ bash scripts/diagnose-update-egress.sh
+```
+
+拉取阶段失败发生在停服之前，服务仍按原版本运行，日志会写明「更新已中止，尚未修改运行版本」。
+
+### 镜像源大层停滞（自动回退）
+
+更新器**逐镜像拉取并单独计时**（`CANVAS_UPDATER_IMAGE_PULL_TIMEOUT`，默认 45 分钟/镜像），不再让三个镜像共享 20 分钟。某个镜像在所选镜像源拉不动时，会自动改用 `ghcr.io` 拉取**同一 digest** 的内容，并在日志写出「改用 ghcr.io 同一 digest」。
+
+这样做是安全的：各源的多架构 index digest 完全一致，同一 tag 对应同一份内容；回退后仍会校验本地仓库摘要。实测：公共镜像源在小层上可能比直连更快，但超大层（约 122 MB）会掉到 100~200 KB/s 甚至完全停滞，此时回退是唯一能完成更新的路径。
+
+只有可恢复的传输类失败（层摘要不符、`failed precondition`、连接重置、超时）才回退；鉴权拒绝、404、架构不符属于确定性失败，会立即中止而不是换源重试。
+
+诊断脚本的第 3 节会实测大层吞吐，直接告诉你会不会撞上超时：
+
+```bash
+bash scripts/diagnose-update-egress.sh
+```
+
+### `unexpected commit digest … failed precondition`
+
+表示本地 content store 中已有的层内容与清单摘要不一致。常见成因是上一次拉取被中断或超时留下半截层，或 Docker 数据目录空间不足导致层写入被截断。更新器现在会删除本次目标标签的本地引用并自动重试一次，同时把报错翻译成可执行提示。
+
+人工处理顺序：
+
+```bash
+cd /opt/open-ai-canvas
+# 把 <目标版本> 换成要升级到的版本号（去掉 v），只删这三个目标标签；
+# 不要用 prune -a：会删除可用于回退的旧版本镜像
+docker image rm --force ghcr.nju.edu.cn/empty616165/genvie-canvas-web:<目标版本> || true
+docker image rm --force ghcr.nju.edu.cn/empty616165/genvie-canvas-backend:<目标版本> || true
+docker image rm --force ghcr.nju.edu.cn/empty616165/genvie-canvas-yingce-agent:<目标版本> || true
+docker system prune -f
+df -h /var/lib/docker
+```
+
+确认空间充足后重新检查版本并更新。更新前要求 Docker 数据目录至少 4 GiB 空闲；更新器会在拉取前自动检查，读不到 Docker 数据目录时跳过该预检而不是阻塞更新。
+
+### 公共镜像源传输中断
+
+部分镜像源能返回正确的清单和多架构 index digest，但在传输大层（例如 120 MB 的 Web 层）时会长时间停滞或截断。清单校验通过并不代表整包可下载。此时应把 `CANVAS_UPDATER_IMAGE_MIRROR` 换成自建镜像或直连 `ghcr.io`，而不是反复重试同一个源。
+
+### Docker 守护进程出口
+
+更新器读取 GitHub 和镜像清单走自己的进程，真正下载镜像层的是 Docker 守护进程。若服务器需要代理出网，两边都要配置，否则会出现「检测通过但拉取失败」：
+
+```bash
+# /etc/systemd/system/open-ai-canvas-updater.service.d/proxy.conf
+# /etc/systemd/system/docker.service.d/proxy.conf
+[Service]
+Environment=HTTP_PROXY=http://<代理地址>:<端口>
+Environment=HTTPS_PROXY=http://<代理地址>:<端口>
+Environment=NO_PROXY=localhost,127.0.0.1,::1,postgres,redis,yingce-agent,backend
+```
+
+`registry-mirrors` 只对 Docker Hub 生效，不能把 `ghcr.io` 重定向到其它仓库。
 
 ## 安全更新顺序
 
@@ -81,8 +161,8 @@ curl -fsSL https://raw.githubusercontent.com/empty616165/genvie/main/scripts/ins
 `raw.githubusercontent.com` 在部分网络被阻断时，脚本本身也可以从 Release 资产取得，并通过 `GITHUB_PROXY` 加速下游下载：
 
 ```bash
-curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/empty616165/genvie/main/scripts/install-host-updater.sh \
-  | sudo env GITHUB_PROXY=https://gh-proxy.com/ REPOSITORY=empty616165/genvie bash
+curl -fsSL https://gh-proxy.org/https://raw.githubusercontent.com/empty616165/genvie/main/scripts/install-host-updater.sh \
+  | sudo env GITHUB_PROXY=https://gh-proxy.org/ REPOSITORY=empty616165/genvie bash
 ```
 
 两个脚本内部都按「GitHub 加速前缀 → raw 直连 → Release 资产」的顺序下载 Compose、安装脚本和更新器二进制，任一路径成功即可继续；全部失败时才报错并列出各候选地址的失败原因。加速前缀只接受显式配置，不会自动选择第三方代理。

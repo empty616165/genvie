@@ -140,7 +140,7 @@ func TestSourcesGitHubRoutingAndCredentialIsolation(t *testing.T) {
 				m.httpClient.Transport = sourceTransport(func(r *http.Request) (*http.Response, error) {
 					wantURL := original
 					if sources.GitHubSource == "gh_proxy" {
-						wantURL = "https://gh-proxy.com/" + original
+						wantURL = m.proxyPrefix() + original
 					}
 					if r.URL.String() != wantURL {
 						t.Errorf("URL=%s, want %s", r.URL, wantURL)
@@ -171,7 +171,7 @@ func TestSourcesProxyDoesNotFallbackOrFollowExternalRedirect(t *testing.T) {
 			calls := 0
 			m.httpClient.Transport = sourceTransport(func(r *http.Request) (*http.Response, error) {
 				calls++
-				if r.URL.Host != "gh-proxy.com" {
+				if r.URL.Host != m.proxyHost() {
 					t.Fatalf("unexpected direct request: %s", r.URL)
 				}
 				response := sourceResponse(status, "")
@@ -248,9 +248,9 @@ func TestSourcesBusyDuringVersionCheck(t *testing.T) {
 func TestSourcesMirrorDigestsAndComposeEnvironment(t *testing.T) {
 	m := sourceManager(t)
 	sources := Sources{"direct", "nju"}
-	images := sources.images(m.config.Repository, "v2.0.0")
+	images := sources.imagesWithin(m, m.config.Repository, "v2.0.0")
 	for _, image := range []string{images.backend, images.web, images.agent} {
-		if !strings.HasPrefix(image, "ghcr.nju.edu.cn/empty616165/") || !strings.HasSuffix(image, ":2.0.0") {
+		if !strings.HasPrefix(image, m.imageRegistry()+"/empty616165/") || !strings.HasSuffix(image, ":2.0.0") {
 			t.Fatal(image)
 		}
 	}
@@ -262,7 +262,7 @@ func TestSourcesMirrorDigestsAndComposeEnvironment(t *testing.T) {
 		for _, key := range []string{"CANVAS_BACKEND_IMAGE", "CANVAS_WEB_IMAGE", "CANVAS_YINGCE_AGENT_IMAGE"} {
 			found := false
 			for _, value := range env {
-				if strings.HasPrefix(value, key+"=ghcr.nju.edu.cn/") {
+				if strings.HasPrefix(value, key+"="+m.imageRegistry()+"/") {
 					found = true
 				}
 			}
@@ -276,7 +276,7 @@ func TestSourcesMirrorDigestsAndComposeEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(digests.agent, "ghcr.nju.edu.cn/") || !strings.Contains(digests.agent, "@sha256:") {
+	if !strings.HasPrefix(digests.agent, m.imageRegistry()+"/") || !strings.Contains(digests.agent, "@sha256:") {
 		t.Fatal(digests)
 	}
 	if err := m.composeWithImages(m.composePath(), "v2.0.0", digests, time.Second, nil, "config", "--quiet"); err != nil {
@@ -304,7 +304,7 @@ func TestSourcesProbeIsAsyncAndChecksSelectedResources(t *testing.T) {
 	}
 	entered, release := make(chan struct{}), make(chan struct{})
 	m.httpClient.Transport = sourceTransport(func(r *http.Request) (*http.Response, error) {
-		if r.URL.Host != "gh-proxy.com" {
+		if r.URL.Host != m.proxyHost() {
 			t.Errorf("unexpected host %s", r.URL.Host)
 		}
 		switch {
@@ -322,7 +322,7 @@ func TestSourcesProbeIsAsyncAndChecksSelectedResources(t *testing.T) {
 	m.runner = sourceRunner(func(_ context.Context, _ string, args, _ []string, out, _ io.Writer) error {
 		if args[0] == "manifest" {
 			manifests.Add(1)
-			if !strings.HasPrefix(args[2], "ghcr.nju.edu.cn/") {
+			if !strings.HasPrefix(args[2], m.imageRegistry()+"/") {
 				t.Errorf("wrong image source %s", args[2])
 			}
 			_, err := fmt.Fprintf(out, `{"schemaVersion":2,"manifests":[{"platform":{"os":"linux","architecture":%q}}]}`, runtime.GOARCH)
