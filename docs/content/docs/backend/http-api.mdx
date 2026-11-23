@@ -5,6 +5,27 @@ description: 信封、错误码与 OpenAPI
 
 # HTTP API 合同
 
+## 跨域来源与同源判定
+
+全局 CORS 中间件对带 `Origin` 的请求先判定来源，再决定是否放行；登录、注册等公开写入口同样经过这一步，被拒绝时返回 HTTP 403、`reason: "cors_origin_denied"`、`msg: "不允许的跨域来源"`。
+
+判定顺序（`backend/internal/kernel/origin.go`、`backend/cmd/server/main.go`）：
+
+1. **同源**：`Origin` 与重建的请求来源一致。重建来源由 `X-Forwarded-Proto`、`X-Forwarded-Host`、`X-Forwarded-Port` 组合出，并与 `Host` 协同校验；scheme、主机名、端口都要匹配，默认端口（80/443）折叠。
+2. **显式白名单**：`CANVAS_CORS_ORIGINS` 中以逗号分隔的 Origin，逐项归一化后精确匹配。
+3. **隐式 localhost**：白名单为空时仅放行 `localhost`、`127.0.0.1`、`::1`。
+4. `CANVAS_CORS_ORIGINS=*` 放行任意合法 http/https Origin，但会反射 `Access-Control-Allow-Origin` 并附带 `Access-Control-Allow-Credentials: true`，生产禁止使用。
+
+只有直连对端是本机或内网地址时，转发头才参与重建；伪造 `X-Forwarded-Host` 不能把外部 Origin 变成同源。`nginx.conf` 用 `map $http_host $canvas_forwarded_host` 转发含端口的 Host——nginx 的 `$host` 会丢端口，非默认端口部署若不修正会表现为「同源却一直 403」。
+
+非默认端口或域名部署必须在 `.env` 显式写全地址，例如：
+
+```env
+CANVAS_CORS_ORIGINS=http://39.170.51.205:8089,http://demo.example.com:8089
+```
+
+环境变量在容器创建时注入，改完要 `docker compose up -d backend` 重建，只重启容器不会重新读取 `.env`。
+
 ## 团队空间
 
 以下接口均在 `/api` 下，使用登录 Cookie。`teamId`、`membershipId`、素材 ID 只用于定位；操作权限由服务端根据当前账号及其有效成员关系决定。成员不能访问其他团队或冒用所有者，待处理邀请不授予读取权限。

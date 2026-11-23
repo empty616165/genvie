@@ -4,6 +4,14 @@ description: 当前项目已实现功能的手工验证清单与未确认边界
 ---
 
 # 待测试
+## 非默认端口与域名访问下的 CORS
+
+- [ ] `http://39.170.51.205:8089` 打开注册页，能正常提交注册并收到业务响应，不再出现「不允许的跨域来源」。
+- [ ] `http://demo.deep-learn.com:8089` 同上；两个地址都写入 `CANVAS_CORS_ORIGINS` 后，注册、登录、`/api/auth/session` 均正常。
+- [ ] 未写入白名单的 `http://<同主机>:<其他端口>` 与 `https://<同主机>:8089` 仍返回 403 `cors_origin_denied`。
+- [ ] 直连后端端口（不经 nginx）伪造 `X-Forwarded-Host` 无法把外部 Origin 变成同源。
+- [ ] 访问统计（`POST /api/traffic/events`）在 8089 端口正常入库，源站页面浏览数不再因端口丢失被拒。
+
 ## HTTP 访问下的生成结果接回
 
 - [ ] 用 `http://<局域网IP>:<端口>` 访问（非 HTTPS、非 localhost，`isSecureContext === false`、`crypto.subtle === undefined`）完整跑一次图片/视频生成：创作页应直接显示结果，不再出现"结果暂未同步 / 模型服务处理失败"。

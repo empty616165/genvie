@@ -19,6 +19,19 @@ docker compose -f docker-compose.deploy.yml logs --since=15m -f backend
 
 本地构建和热更新开发分别将文件名换成 `docker-compose.local.yml` 或 `docker-compose.dev.yml`。代码修改后需要运行新构建的后端，旧容器不会自动增加这些日志。
 
+## 本地访问地址与 CORS
+
+本地后端只放行同源请求和白名单来源。默认 `CANVAS_CORS_ORIGINS=http://localhost:3000` 时，用 `http://127.0.0.1:3000` 或局域网 IP 打开页面，注册、登录会返回 403「不允许的跨域来源」——`localhost` 与 `127.0.0.1` 是不同的 Origin。
+
+同一后端要支持多个本地地址时，把它们一起写进环境变量：
+
+```bash
+CANVAS_CORS_ORIGINS='http://localhost:3000,http://127.0.0.1:3000,http://192.168.1.10:3000' \
+  go run ./cmd/server
+```
+
+Vite 代理会把 `/api` 转给后端，所以从 `http://<局域网IP>:3000` 开发时，该地址也要列入白名单，否则浏览器发出的 `Origin` 不在允许列表内。改环境变量后必须重启后端进程。
+
 ## Compose 公网资源地址
 
 `docker-compose.yml`、`docker-compose.dev.yml`、`docker-compose.local.yml`、`docker-compose.server.yml` 和 `docker-compose.deploy.yml` 均将 `.env` 中的 `CANVAS_PUBLIC_BASE_URL` 传入后端。使用本地文件存储且上游模型需要读取参考素材时，将它设为上游能访问的 HTTPS 站点根地址（例如 `https://canvas.example.com`，不要附加 `/api`）；存储设置中的公网访问地址优先于该环境变量。
