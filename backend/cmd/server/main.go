@@ -18,6 +18,7 @@ import (
 
 	"yingce/backend/internal/database"
 	"yingce/backend/internal/handler"
+	"yingce/backend/internal/kernel"
 	"yingce/backend/internal/logging"
 	"yingce/backend/internal/repository"
 	"yingce/backend/internal/service"
@@ -261,7 +262,8 @@ func cors() (gin.HandlerFunc, error) {
 	return func(c *gin.Context) {
 		origin := strings.TrimSpace(c.GetHeader("Origin"))
 		if origin != "" && !allowedOriginWithPolicy(c, origin, policy) {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"code": http.StatusForbidden, "data": nil, "msg": "不允许的跨域来源"})
+			slog.Warn("cors origin denied", "origin", origin, "requestHost", c.Request.Host, "forwardedHost", c.GetHeader("X-Forwarded-Host"))
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"code": http.StatusForbidden, "data": nil, "msg": "不允许的跨域来源", "reason": "cors_origin_denied"})
 			return
 		}
 		if origin != "" {
@@ -310,34 +312,28 @@ func parseCORSPolicy(raw string) (corsPolicy, error) {
 }
 
 func normalizeCORSOrigin(raw string) (string, error) {
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return "", fmt.Errorf("origin is empty")
-	}
-	parsed, err := url.Parse(value)
-	if err != nil || parsed.Host == "" || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return "", fmt.Errorf("origin must be an http or https origin")
-	}
-	if parsed.Path != "" && parsed.Path != "/" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", fmt.Errorf("origin must not contain a path, query, or fragment")
-	}
-	return strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host), nil
+	return kernel.NormalizeOrigin(raw)
+}
+
+// requestOrigin 由反向代理头重建本请求的对外来源。
+// 只有本机或内网代理才采信转发头；转发 Host 的主机名还要与请求 Host 一致，避免伪造头把任意 Origin 变成"同源"。
+func requestOrigin(c *gin.Context) (string, bool) {
+	return kernel.ForwardedRequest{
+		TLS:            c.Request.TLS != nil,
+		RemoteAddr:     c.Request.RemoteAddr,
+		Host:           c.Request.Host,
+		ForwardedHost:  c.GetHeader("X-Forwarded-Host"),
+		ForwardedPort:  c.GetHeader("X-Forwarded-Port"),
+		ForwardedProto: c.GetHeader("X-Forwarded-Proto"),
+	}.Origin()
 }
 
 func allowedOriginWithPolicy(c *gin.Context, origin string, policy corsPolicy) bool {
-	normalizedOrigin, err := normalizeCORSOrigin(origin)
+	normalizedOrigin, err := kernel.NormalizeOrigin(origin)
 	if err != nil {
 		return false
 	}
-	parsed, err := url.Parse(normalizedOrigin)
-	if err != nil {
-		return false
-	}
-	requestHost := c.Request.Host
-	if forwardedHost := strings.TrimSpace(c.GetHeader("X-Forwarded-Host")); forwardedHost != "" {
-		requestHost = strings.TrimSpace(strings.Split(forwardedHost, ",")[0])
-	}
-	if strings.EqualFold(parsed.Host, strings.TrimSpace(requestHost)) {
+	if sameOrigin, ok := requestOrigin(c); ok && kernel.CompareOrigin(normalizedOrigin, sameOrigin) {
 		return true
 	}
 	if policy.allowAny {
@@ -347,6 +343,10 @@ func allowedOriginWithPolicy(c *gin.Context, origin string, policy corsPolicy) b
 		return true
 	}
 	if len(policy.origins) > 0 {
+		return false
+	}
+	parsed, err := url.Parse(normalizedOrigin)
+	if err != nil {
 		return false
 	}
 	host := strings.ToLower(parsed.Hostname())

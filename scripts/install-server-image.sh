@@ -130,6 +130,14 @@ prepare_environment() {
         if ! grep -Eq '^YINGCE_AGENT_TOKEN=.{32,}$' .env; then
             set_env_value .env YINGCE_AGENT_TOKEN "$(openssl rand -hex 32)"
         fi
+        # 空值等于只允许同源；补上当前部署地址，避免换端口或换 IP 访问时注册、登录被 CORS 拒绝。
+        if ! grep -Eq '^CANVAS_CORS_ORIGINS=.+$' .env; then
+            local detected_origin
+            detected_origin="$(default_cors_origin)"
+            if [[ -n "$detected_origin" ]]; then
+                set_env_value .env CANVAS_CORS_ORIGINS "$detected_origin"
+            fi
+        fi
         return
     fi
 
@@ -157,8 +165,16 @@ YINGCE_AGENT_TOKEN=$(openssl rand -hex 32)
 CANVAS_REGISTRATION_ENABLED=false
 CANVAS_ALLOW_PRIVATE_UPSTREAMS=false
 CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS=
-CANVAS_CORS_ORIGINS=
+CANVAS_CORS_ORIGINS=$(default_cors_origin)
 EOF
+}
+
+# 一键部署不猜测域名，只写入本机首个内网地址；HTTPS 或域名访问需在 .env 手动追加 Origin。
+default_cors_origin() {
+    local local_ip
+    local_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    [[ -n "$local_ip" ]] || return 0
+    printf 'http://%s:%s' "$local_ip" "$CANVAS_HTTP_PORT"
 }
 
 set_env_value() {

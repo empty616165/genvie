@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"mime"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"yingce/backend/internal/kernel"
 	"yingce/backend/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -169,38 +169,30 @@ func siteTrafficOriginAllowed(c *gin.Context) bool {
 	if len(values) != 1 {
 		return false
 	}
-	origin, valid := parseSiteTrafficOrigin(values[0])
+	if _, valid := parseSiteTrafficOrigin(values[0]); !valid {
+		return false
+	}
 	// 复用全局CORS已校验结果；这个公开写入口不把*或任意转发Host当作明确授权。
-	if !valid || c.Writer.Header().Get("Access-Control-Allow-Origin") != values[0] {
+	if c.Writer.Header().Get("Access-Control-Allow-Origin") != values[0] {
+		return false
+	}
+	normalizedOrigin, err := kernel.NormalizeOrigin(values[0])
+	if err != nil {
 		return false
 	}
 	for _, configured := range strings.Split(os.Getenv("CANVAS_CORS_ORIGINS"), ",") {
-		allowed, valid := parseSiteTrafficOrigin(strings.TrimSuffix(strings.TrimSpace(configured), "/"))
-		if valid && allowed.Scheme == origin.Scheme && strings.EqualFold(allowed.Host, origin.Host) {
+		allowed, err := kernel.NormalizeOrigin(strings.TrimSpace(configured))
+		if err == nil && allowed == normalizedOrigin {
 			return true
 		}
 	}
-	scheme := "http"
-	peer := net.ParseIP(c.RemoteIP())
-	if c.Request.TLS != nil {
-		scheme = "https"
-	} else if peer != nil && (peer.IsLoopback() || peer.IsPrivate()) {
-		// HTTPS在同机/内网反代终止时恢复协议；生产nginx仍保留实际Host。
-		if forwarded := c.GetHeader("X-Forwarded-Proto"); forwarded == "http" || forwarded == "https" {
-			scheme = forwarded
-		}
-	}
-	requestHost := c.Request.Host
-	if !strings.EqualFold(origin.Host, requestHost) && peer != nil && peer.IsLoopback() {
-		// Vite changeOrigin+xfwd改写Host；仅peer、目标Host、来源Host均环回时接受单值转发Host。
-		isLoopback := func(host string) bool {
-			ip := net.ParseIP(host)
-			return strings.EqualFold(host, "localhost") || (ip != nil && ip.IsLoopback())
-		}
-		target, valid := parseSiteTrafficOrigin(scheme + "://" + requestHost)
-		if valid && isLoopback(target.Hostname()) && isLoopback(origin.Hostname()) && strings.EqualFold(c.GetHeader("X-Forwarded-Host"), origin.Host) {
-			requestHost = origin.Host
-		}
-	}
-	return strings.EqualFold(origin.Host, requestHost) && scheme == origin.Scheme
+	requestOrigin, ok := (kernel.ForwardedRequest{
+		TLS:            c.Request.TLS != nil,
+		RemoteAddr:     c.Request.RemoteAddr,
+		Host:           c.Request.Host,
+		ForwardedHost:  c.GetHeader("X-Forwarded-Host"),
+		ForwardedPort:  c.GetHeader("X-Forwarded-Port"),
+		ForwardedProto: c.GetHeader("X-Forwarded-Proto"),
+	}).Origin()
+	return ok && kernel.CompareOrigin(normalizedOrigin, requestOrigin)
 }

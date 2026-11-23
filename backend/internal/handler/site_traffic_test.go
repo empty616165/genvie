@@ -250,6 +250,36 @@ func TestSiteTrafficOriginRejectsWildcardAndSpoofedForwardedHost(t *testing.T) {
 	}
 }
 
+func TestSiteTrafficOriginKeepsNonDefaultPort(t *testing.T) {
+	t.Setenv("CANVAS_CORS_ORIGINS", "")
+	check := func(origin, requestHost, peer, forwardedHost, forwardedPort, forwardedProto string, cors bool) bool {
+		context, _ := gin.CreateTestContext(httptest.NewRecorder())
+		context.Request = httptest.NewRequest(http.MethodPost, "http://"+requestHost+"/api/traffic/events", nil)
+		context.Request.RemoteAddr = peer
+		context.Request.Header.Set("Origin", origin)
+		context.Request.Header.Set("X-Forwarded-Host", forwardedHost)
+		context.Request.Header.Set("X-Forwarded-Port", forwardedPort)
+		context.Request.Header.Set("X-Forwarded-Proto", forwardedProto)
+		if cors {
+			context.Header("Access-Control-Allow-Origin", origin)
+		}
+		return siteTrafficOriginAllowed(context)
+	}
+	// nginx 的 $host 丢端口，端口由 X-Forwarded-Port 还原。
+	if !check("http://demo.example.test:8089", "demo.example.test", "172.18.0.5:52000", "demo.example.test", "8089", "http", true) {
+		t.Fatal("non-default port forwarded via X-Forwarded-Port rejected")
+	}
+	if !check("http://demo.example.test:8089", "demo.example.test", "172.18.0.5:52000", "demo.example.test:8089", "", "http", true) {
+		t.Fatal("non-default port forwarded in X-Forwarded-Host rejected")
+	}
+	if check("http://demo.example.test:9999", "demo.example.test", "172.18.0.5:52000", "demo.example.test", "8089", "http", true) {
+		t.Fatal("mismatched port authorized")
+	}
+	if check("https://demo.example.test:8089", "demo.example.test", "172.18.0.5:52000", "demo.example.test", "8089", "http", true) {
+		t.Fatal("scheme mismatch authorized")
+	}
+}
+
 func TestSiteTrafficOverviewRequiresAdminAndValidRange(t *testing.T) {
 	router, _ := siteTrafficHandlerFixture(t)
 	for _, test := range []struct {

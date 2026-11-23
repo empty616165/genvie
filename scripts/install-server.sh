@@ -80,6 +80,14 @@ sync_source() {
     cd "$INSTALL_DIR"
 }
 
+# 一键部署不猜测域名，只写入本机首个内网地址；HTTPS 或域名访问需在 .env 手动追加 Origin。
+default_cors_origin() {
+    local local_ip
+    local_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    [[ -n "$local_ip" ]] || return 0
+    printf 'http://%s:%s' "$local_ip" "$CANVAS_HTTP_PORT"
+}
+
 prepare_environment() {
     if [[ -f .env ]]; then
         grep -Eq '^POSTGRES_PASSWORD=.+$' .env || fail "现有 .env 缺少 POSTGRES_PASSWORD"
@@ -112,7 +120,7 @@ YINGCE_AGENT_TOKEN=$(openssl rand -hex 32)
 CANVAS_REGISTRATION_ENABLED=false
 CANVAS_ALLOW_PRIVATE_UPSTREAMS=false
 CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS=
-CANVAS_CORS_ORIGINS=
+CANVAS_CORS_ORIGINS=$(default_cors_origin)
 EOF
 }
 
