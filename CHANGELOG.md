@@ -1,4 +1,10 @@
 # CHANGELOG
+## v1.8.7.13
+- 跨域来源：修复跑在非默认端口（如 `1888`、`8089`）的部署注册、登录一律返回「不允许的跨域来源」的问题。根因是 nginx 的 `$host` 丢掉了端口，后端同源判定却用含端口的 `Origin` 去比对它，导致同源分支永远不命中，只能靠 `CANVAS_CORS_ORIGINS` 逐字列出每个访问地址。现由 `nginx.conf` 转发含端口的真实 Host，后端改用统一的 `internal/kernel/origin.go` 归一化并严格比较 scheme、主机名和端口，默认端口折叠。已写入白名单的旧部署不受影响。
+- 跨域来源：收紧转发头信任边界。只有直连对端是本机或内网时才采信 `X-Forwarded-Proto`/`X-Forwarded-Host`/`X-Forwarded-Port`，且转发 Host 的主机名必须与请求 Host 一致，伪造头不能再把外部 Origin 变成同源。被拒绝的请求补 `reason: "cors_origin_denied"` 并记录一条 warn 日志（不含 Cookie 与密钥）。
+- 跨域来源：`docker-compose.server.yml` 的 `CANVAS_CORS_ORIGINS` 默认值从 `*` 改为空。该变量会反射任意 Origin 并附带 `Access-Control-Allow-Credentials: true`，默认放开等于允许任意站点跨站读取登录态响应。一键安装脚本改为自动写入本机地址，不再留空。
+- 访问统计：`POST /api/traffic/events` 复用同一套同源判定，修掉非默认端口下匿名访问统计被误拒、源站页面浏览数不入库的问题。
+
 ## v1.8.7.12
 - 系统更新：GitHub 加速前缀与容器镜像源改为宿主机可配置（`CANVAS_UPDATER_GITHUB_PROXY`、`CANVAS_UPDATER_IMAGE_MIRROR`），默认 `https://gh-proxy.org/` 与 `ghcr.nju.edu.cn`；`gh-proxy.com` 已对整站返回 403，导致选中「镜像加速」时检查更新与连通性检测全部失败。后台改为显示实际生效地址。
 - 系统更新：镜像拉取遇到层摘要不符、`failed precondition`、半截层、连接重置或超时，自动删除本次目标标签后重试一次；鉴权、404、架构不符仍立即中止，且不删除可回退的旧版本镜像。拉取前检查 Docker 数据目录 4 GiB 空闲，并把层校验失败、空间不足等报错翻译为可执行提示。
