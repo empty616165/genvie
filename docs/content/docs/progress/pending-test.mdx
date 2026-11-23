@@ -10,7 +10,9 @@ description: 当前项目已实现功能的手工验证清单与未确认边界
 - [ ] `http://demo.deep-learn.com:8089` 同上；两个地址都写入 `CANVAS_CORS_ORIGINS` 后，注册、登录、`/api/auth/session` 均正常。
 - [ ] 未写入白名单的 `http://<同主机>:<其他端口>` 与 `https://<同主机>:8089` 仍返回 403 `cors_origin_denied`。
 - [ ] 直连后端端口（不经 nginx）伪造 `X-Forwarded-Host` 无法把外部 Origin 变成同源。
+- [ ] 伪造 `X-Forwarded-Port` 不再生效：对同一主机名换任意端口（如 `:9999`、`:12345`）附加同值 `X-Forwarded-Port` 后仍返回 403。v1.8.7.13 曾信任该头，任何同域名端口都能借此读取登录态响应，属已修复的安全缺陷。
 - [ ] 访问统计（`POST /api/traffic/events`）在 8089 端口正常入库，源站页面浏览数不再因端口丢失被拒。
+- [ ] 阿里云 ESA/CDN 后面的部署（如 `http://vdo.llmhub.xin:8880`，源站 `192.168.19.28`）：回源若只传主机名、剥掉端口，同源判定仍会失败；需在该源站 `.env` 的 `CANVAS_CORS_ORIGINS` 显式写入 `http://vdo.llmhub.xin:8880`，或在 ESA 控制台把回源 Host 改成保留客户端端口后验证自动放行。
 
 ## HTTP 访问下的生成结果接回
 

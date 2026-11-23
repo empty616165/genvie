@@ -11,12 +11,16 @@ description: 信封、错误码与 OpenAPI
 
 判定顺序（`backend/internal/kernel/origin.go`、`backend/cmd/server/main.go`）：
 
-1. **同源**：`Origin` 与重建的请求来源一致。重建来源由 `X-Forwarded-Proto`、`X-Forwarded-Host`、`X-Forwarded-Port` 组合出，并与 `Host` 协同校验；scheme、主机名、端口都要匹配，默认端口（80/443）折叠。
+1. **同源**：`Origin` 与重建的请求来源一致。重建来源由 `X-Forwarded-Proto`、`X-Forwarded-Host` 组合出，并与 `Host` 协同校验；scheme、主机名、端口都要匹配，默认端口（80/443）折叠。
 2. **显式白名单**：`CANVAS_CORS_ORIGINS` 中以逗号分隔的 Origin，逐项归一化后精确匹配。
 3. **隐式 localhost**：白名单为空时仅放行 `localhost`、`127.0.0.1`、`::1`。
 4. `CANVAS_CORS_ORIGINS=*` 放行任意合法 http/https Origin，但会反射 `Access-Control-Allow-Origin` 并附带 `Access-Control-Allow-Credentials: true`，生产禁止使用。
 
 只有直连对端是本机或内网地址时，转发头才参与重建；伪造 `X-Forwarded-Host` 不能把外部 Origin 变成同源。`nginx.conf` 用 `map $http_host $canvas_forwarded_host` 转发含端口的 Host——nginx 的 `$host` 会丢端口，非默认端口部署若不修正会表现为「同源却一直 403」。
+
+端口只从转发 Host 里取，**不读 `X-Forwarded-Port`**：反向代理不负责重写这个头，采信客户端自带的值等于让任何同域名的其他端口都能读取登录态响应（Cookie 不按端口隔离）。请求 `Host` 自带端口时，转发 Host 也不得改写成别的端口。
+
+端口在链路上被剥掉时（例如 CDN 回源只传主机名），后端无法还原真实端口，只能用 `CANVAS_CORS_ORIGINS` 显式列出完整 Origin 兜底。可从拒绝日志 `cors origin denied` 的 `forwardedHost` 确认是否出现端口丢失。正确做法是让最外层代理保留客户端 Host，或改用带端口的转发 Host。
 
 非默认端口或域名部署必须在 `.env` 显式写全地址，例如：
 
