@@ -191,7 +191,6 @@ func siteTrafficOriginAllowed(c *gin.Context) bool {
 		RemoteAddr:     c.Request.RemoteAddr,
 		Host:           c.Request.Host,
 		ForwardedHost:  c.GetHeader("X-Forwarded-Host"),
-		ForwardedPort:  c.GetHeader("X-Forwarded-Port"),
 		ForwardedProto: c.GetHeader("X-Forwarded-Proto"),
 	}).Origin()
 	return ok && kernel.CompareOrigin(normalizedOrigin, requestOrigin)

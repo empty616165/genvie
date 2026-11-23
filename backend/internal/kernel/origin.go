@@ -45,9 +45,11 @@ func NormalizeOrigin(raw string) (string, error) {
 	return scheme + "://" + joinOriginHost(hostname, port), nil
 }
 
-// ForwardedOrigin 由反向代理头组装来源。host 可能已经带端口，也可能只有主机名；
-// 只有 host 未带端口时才回退到独立转发的 port。
-func ForwardedOrigin(scheme, host, port string) (string, bool) {
+// ForwardedOrigin 由转发 Host 组装来源。端口只能来自 Host 本身：
+// 外层代理没有剥掉端口时，host 形如 demo.example.com:8089；端口已被剥掉时无从还原，
+// 由显式白名单兜底。不读独立的 X-Forwarded-Port——反向代理不负责重写它，
+// 客户端伪造的值会直接把任意端口伪装成同源（同主机不同端口共享 Cookie）。
+func ForwardedOrigin(scheme, host string) (string, bool) {
 	scheme = strings.ToLower(strings.TrimSpace(scheme))
 	if scheme == "" {
 		scheme = "http"
@@ -56,11 +58,7 @@ func ForwardedOrigin(scheme, host, port string) (string, bool) {
 	if host == "" {
 		return "", false
 	}
-	parsedHost, parsedPort := splitOriginHost(host)
-	if parsedPort == "" {
-		parsedPort = FirstHeaderValue(port)
-	}
-	origin, err := NormalizeOrigin(scheme + "://" + joinOriginHost(parsedHost, parsedPort))
+	origin, err := NormalizeOrigin(scheme + "://" + host)
 	if err != nil {
 		return "", false
 	}
@@ -90,9 +88,8 @@ type ForwardedRequest struct {
 	RemoteAddr string
 	// Host 是请求的 Host 头。
 	Host string
-	// ForwardedHost/ForwardedPort/ForwardedProto 只在直连对端可信任时才参与重建。
+	// ForwardedHost/ForwardedProto 只在直连对端可信任时才参与重建。
 	ForwardedHost  string
-	ForwardedPort  string
 	ForwardedProto string
 }
 
@@ -110,18 +107,15 @@ func (r ForwardedRequest) Origin() (string, bool) {
 		scheme = "https"
 	}
 	host := strings.TrimSpace(r.Host)
-	port := ""
 	if r.TrustedProxy() {
 		if forwarded := FirstHeaderValue(r.ForwardedProto); forwarded == "http" || forwarded == "https" {
 			scheme = forwarded
 		}
 		if forwarded := FirstHeaderValue(r.ForwardedHost); forwarded != "" && forwardedHostTrusted(forwarded, host) {
 			host = forwarded
-			// nginx 的 $host 会丢端口，端口可能由独立的 X-Forwarded-Port 补齐。
-			port = FirstHeaderValue(r.ForwardedPort)
 		}
 	}
-	return ForwardedOrigin(scheme, host, port)
+	return ForwardedOrigin(scheme, host)
 }
 
 // SameHostname 比较两个 host[:port] 的主机名。
@@ -162,11 +156,23 @@ func FirstHeaderValue(raw string) string {
 	return strings.ToLower(strings.TrimSpace(strings.Split(raw, ",")[0]))
 }
 
+// forwardedHostTrusted 决定是否采信转发 Host。主机名必须与请求 Host 一致，
+// 且不能借转发头把请求换成同主机的另一个端口：反向代理会用 `Host $host` 丢掉端口，
+// 所以请求 Host 不带端口时才允许转发 Host 补端口；请求 Host 自带端口时必须两侧一致。
+// 本机回环代理（Vite dev）允许两侧都是回环地址。
 func forwardedHostTrusted(forwarded, host string) bool {
-	if SameHostname(forwarded, host) {
+	if IsLoopbackHost(forwarded) && IsLoopbackHost(host) {
 		return true
 	}
-	return IsLoopbackHost(forwarded) && IsLoopbackHost(host)
+	if !SameHostname(forwarded, host) {
+		return false
+	}
+	_, forwardedPort := splitOriginHost(forwarded)
+	_, hostPort := splitOriginHost(host)
+	if hostPort == "" {
+		return true
+	}
+	return forwardedPort == "" || forwardedPort == hostPort
 }
 
 // splitOriginHost 拆分 host[:port]，同时支持 [::1]:8080 这样的 IPv6 字面量。

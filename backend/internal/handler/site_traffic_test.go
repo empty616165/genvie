@@ -265,17 +265,17 @@ func TestSiteTrafficOriginKeepsNonDefaultPort(t *testing.T) {
 		}
 		return siteTrafficOriginAllowed(context)
 	}
-	// nginx 的 $host 丢端口，端口由 X-Forwarded-Port 还原。
-	if !check("http://demo.example.test:8089", "demo.example.test", "172.18.0.5:52000", "demo.example.test", "8089", "http", true) {
-		t.Fatal("non-default port forwarded via X-Forwarded-Port rejected")
-	}
+	// 端口只能来自带端口的转发 Host；独立转发端口不参与判定。
 	if !check("http://demo.example.test:8089", "demo.example.test", "172.18.0.5:52000", "demo.example.test:8089", "", "http", true) {
 		t.Fatal("non-default port forwarded in X-Forwarded-Host rejected")
 	}
-	if check("http://demo.example.test:9999", "demo.example.test", "172.18.0.5:52000", "demo.example.test", "8089", "http", true) {
+	if check("http://demo.example.test:9999", "demo.example.test", "172.18.0.5:52000", "demo.example.test", "9999", "http", true) {
+		t.Fatal("client-supplied X-Forwarded-Port authorized a foreign port")
+	}
+	if check("http://demo.example.test:9999", "demo.example.test", "172.18.0.5:52000", "demo.example.test:8089", "", "http", true) {
 		t.Fatal("mismatched port authorized")
 	}
-	if check("https://demo.example.test:8089", "demo.example.test", "172.18.0.5:52000", "demo.example.test", "8089", "http", true) {
+	if check("https://demo.example.test:8089", "demo.example.test", "172.18.0.5:52000", "demo.example.test:8089", "", "http", true) {
 		t.Fatal("scheme mismatch authorized")
 	}
 }

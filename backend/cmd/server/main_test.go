@@ -78,21 +78,20 @@ func TestAllowedOriginUsesForwardedHost(t *testing.T) {
 
 func TestAllowedOriginKeepsNonDefaultForwardedPort(t *testing.T) {
 	t.Setenv("CANVAS_CORS_ORIGINS", "")
-	// nginx 的 $host 不含端口，端口由 X-Forwarded-Port 或带端口的转发 Host 补齐。
+	// 端口只能来自带端口的转发 Host；nginx 用 `Host $host` 转发会丢端口，此时由显式白名单兜底。
 	for _, test := range []struct {
 		name            string
 		forwardedHost   string
-		forwardedPort   string
 		requestHost     string
 		origin          string
 		expectedAllowed bool
 	}{
-		{"port-from-forwarded-port", "demo.example.com", "8089", "demo.example.com", "http://demo.example.com:8089", true},
-		{"port-in-forwarded-host", "demo.example.com:8089", "", "demo.example.com", "http://demo.example.com:8089", true},
-		{"wrong-port-rejected", "demo.example.com", "8089", "demo.example.com", "http://demo.example.com:1888", false},
-		{"scheme-mismatch-rejected", "demo.example.com", "8089", "demo.example.com", "https://demo.example.com:8089", false},
-		{"other-hostname-rejected", "evil.example.com", "8089", "demo.example.com", "http://evil.example.com:8089", false},
-		{"default-port-folded", "demo.example.com", "80", "demo.example.com", "http://demo.example.com", true},
+		{"port-in-forwarded-host", "demo.example.com:8089", "demo.example.com", "http://demo.example.com:8089", true},
+		{"wrong-port-rejected", "demo.example.com:8089", "demo.example.com", "http://demo.example.com:1888", false},
+		{"scheme-mismatch-rejected", "demo.example.com:8089", "demo.example.com", "https://demo.example.com:8089", false},
+		{"other-hostname-rejected", "evil.example.com:8089", "demo.example.com", "http://evil.example.com:8089", false},
+		{"default-port-folded", "demo.example.com:80", "demo.example.com", "http://demo.example.com", true},
+		{"dropped-port-needs-whitelist", "demo.example.com", "demo.example.com", "http://demo.example.com:8089", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			context, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -100,11 +99,41 @@ func TestAllowedOriginKeepsNonDefaultForwardedPort(t *testing.T) {
 			context.Request.RemoteAddr = "172.18.0.5:52000"
 			context.Request.Header.Set("X-Forwarded-Proto", "http")
 			context.Request.Header.Set("X-Forwarded-Host", test.forwardedHost)
-			context.Request.Header.Set("X-Forwarded-Port", test.forwardedPort)
 			if got := allowedOrigin(context, test.origin); got != test.expectedAllowed {
 				t.Fatalf("allowedOrigin(%q) = %v, want %v", test.origin, got, test.expectedAllowed)
 			}
 		})
+	}
+}
+
+// 客户端的 X-Forwarded-Port 不得参与同源判定：反向代理不会重写这个头，
+// 信任它等于允许任何同域名的其他端口读取登录态响应。
+func TestAllowedOriginIgnoresClientForwardedPort(t *testing.T) {
+	t.Setenv("CANVAS_CORS_ORIGINS", "")
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = httptest.NewRequest("GET", "http://demo.example.com/api/health", nil)
+	context.Request.RemoteAddr = "172.18.0.5:52000"
+	context.Request.Header.Set("X-Forwarded-Proto", "http")
+	context.Request.Header.Set("X-Forwarded-Host", "demo.example.com")
+	context.Request.Header.Set("X-Forwarded-Port", "9999")
+	if allowedOrigin(context, "http://demo.example.com:9999") {
+		t.Fatal("client-supplied X-Forwarded-Port must not establish same-origin")
+	}
+}
+
+// 请求 Host 自带端口时，转发 Host 不得把端口改成别的值。
+func TestAllowedOriginRejectsForwardedPortDifferingFromHost(t *testing.T) {
+	t.Setenv("CANVAS_CORS_ORIGINS", "")
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = httptest.NewRequest("GET", "http://demo.example.com:1888/api/health", nil)
+	context.Request.RemoteAddr = "172.18.0.5:52000"
+	context.Request.Header.Set("X-Forwarded-Proto", "http")
+	context.Request.Header.Set("X-Forwarded-Host", "demo.example.com:9999")
+	if allowedOrigin(context, "http://demo.example.com:9999") {
+		t.Fatal("forwarded host must not replace the port of a request Host that already has one")
+	}
+	if !allowedOrigin(context, "http://demo.example.com:1888") {
+		t.Fatal("request Host port should stay authoritative")
 	}
 }
 
@@ -114,7 +143,7 @@ func TestAllowedOriginIgnoresForwardedHeadersFromUntrustedPeer(t *testing.T) {
 	context.Request = httptest.NewRequest("GET", "http://demo.example.com:8089/api/health", nil)
 	// 直连公网客户端伪造转发头不能把外部 Origin 变成同源。
 	context.Request.RemoteAddr = "39.170.51.205:40000"
-	context.Request.Header.Set("X-Forwarded-Host", "evil.example.com")
+	context.Request.Header.Set("X-Forwarded-Host", "evil.example.com:8089")
 	context.Request.Header.Set("X-Forwarded-Port", "8089")
 	if allowedOrigin(context, "http://evil.example.com:8089") {
 		t.Fatal("untrusted peer must not authorize a foreign origin via forwarded headers")

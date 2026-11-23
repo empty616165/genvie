@@ -317,13 +317,13 @@ func normalizeCORSOrigin(raw string) (string, error) {
 
 // requestOrigin 由反向代理头重建本请求的对外来源。
 // 只有本机或内网代理才采信转发头；转发 Host 的主机名还要与请求 Host 一致，避免伪造头把任意 Origin 变成"同源"。
+// 端口只从转发 Host 里取，不读 X-Forwarded-Port：反向代理不重写这个头，客户端伪造它就能把任意端口变成同源。
 func requestOrigin(c *gin.Context) (string, bool) {
 	return kernel.ForwardedRequest{
 		TLS:            c.Request.TLS != nil,
 		RemoteAddr:     c.Request.RemoteAddr,
 		Host:           c.Request.Host,
 		ForwardedHost:  c.GetHeader("X-Forwarded-Host"),
-		ForwardedPort:  c.GetHeader("X-Forwarded-Port"),
 		ForwardedProto: c.GetHeader("X-Forwarded-Proto"),
 	}.Origin()
 }
