@@ -1,4 +1,9 @@
 # CHANGELOG
+## v1.8.7.14
+- 跨域来源：修复 `v1.8.7.13` 引入的信任边界缺陷。后端曾用 `X-Forwarded-Port` 还原被代理丢掉的端口，但反向代理不负责重写该头，客户端自带的任意值会直接生效——实测 `Origin: http://<同主机>:9999` 附带 `X-Forwarded-Port: 9999` 即被放行（`:12345` 同理）。Cookie 不按端口隔离，这等于允许同域名的任意端口携带登录态跨站读取响应。现端口只从带端口的转发 Host 取，不再读取 `X-Forwarded-Port`；`nginx.conf` 同时显式清空该头，不再向下游透传客户端值。
+- 跨域来源：转发 Host 不再改写请求 Host 已有的端口。请求 `Host` 自带端口时，转发 Host 的端口必须一致（此前只在主机名相同时就整段采信，可被用来替换端口）。代理丢端口的情况保持 fail closed，由 `CANVAS_CORS_ORIGINS` 显式白名单兜底。
+- 跨域来源：文档补充 CDN 链路端口丢失的排查与处理方式（如 `http://vdo.llmhub.xin:8880` 经阿里云 ESA 回源只传主机名），并更新待真机验收清单。
+
 ## v1.8.7.13
 - 跨域来源：修复跑在非默认端口（如 `1888`、`8089`）的部署注册、登录一律返回「不允许的跨域来源」的问题。根因是 nginx 的 `$host` 丢掉了端口，后端同源判定却用含端口的 `Origin` 去比对它，导致同源分支永远不命中，只能靠 `CANVAS_CORS_ORIGINS` 逐字列出每个访问地址。现由 `nginx.conf` 转发含端口的真实 Host，后端改用统一的 `internal/kernel/origin.go` 归一化并严格比较 scheme、主机名和端口，默认端口折叠。已写入白名单的旧部署不受影响。
 - 跨域来源：收紧转发头信任边界。只有直连对端是本机或内网时才采信 `X-Forwarded-Proto`/`X-Forwarded-Host`/`X-Forwarded-Port`，且转发 Host 的主机名必须与请求 Host 一致，伪造头不能再把外部 Origin 变成同源。被拒绝的请求补 `reason: "cors_origin_denied"` 并记录一条 warn 日志（不含 Cookie 与密钥）。
