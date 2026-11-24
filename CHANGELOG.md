@@ -1,4 +1,9 @@
 # CHANGELOG
+## v1.8.7.15
+- 跨域来源：新增代码级同源兜底。TLS 在 CDN/ESA 终止、边缘又不下发 `X-Forwarded-Proto` 时，后端只能把来源重建为 `http://<域名>`，浏览器的 `https://` Origin 因 scheme 不等被一律拒绝（实测 `https://vdo.llmhub.xin` 403，源站直连 `http://` 来源 200）。现后端把 `CANVAS_PUBLIC_BASE_URL` 也当作可信同源候选，它与 `Origin` 归一化后必须 scheme、主机名、端口全等，不会放宽成「同主机名即同源」。该值由部署者显式配置、不来自请求头，客户端无法伪造；未配置时行为与之前一致（fail closed）。`GET /api/traffic/events` 复用同一判定。
+- 跨域来源：拒绝日志补 `forwardedProto` 字段，可直接从日志判断是否为 scheme 丢失，`scripts/diagnose-cors-origin.sh` 提供只读四项诊断。`cors_production_test` 与 `main_test` 覆盖「https 来源无转发头」「声明地址放行」「其他端口/域名仍拒绝」「未配置时仍 fail closed」。
+- 跨域来源：文档补 TLS 终止在 CDN/ESA 时的 scheme 丢失排查流程，并说明 `CANVAS_PUBLIC_BASE_URL` 同时是本地存储签名链接、真人认证回调和消费报表的对外地址。
+
 ## v1.8.7.14
 - 跨域来源：修复 `v1.8.7.13` 引入的信任边界缺陷。后端曾用 `X-Forwarded-Port` 还原被代理丢掉的端口，但反向代理不负责重写该头，客户端自带的任意值会直接生效——实测 `Origin: http://<同主机>:9999` 附带 `X-Forwarded-Port: 9999` 即被放行（`:12345` 同理）。Cookie 不按端口隔离，这等于允许同域名的任意端口携带登录态跨站读取响应。现端口只从带端口的转发 Host 取，不再读取 `X-Forwarded-Port`；`nginx.conf` 同时显式清空该头，不再向下游透传客户端值。
 - 跨域来源：转发 Host 不再改写请求 Host 已有的端口。请求 `Host` 自带端口时，转发 Host 的端口必须一致（此前只在主机名相同时就整段采信，可被用来替换端口）。代理丢端口的情况保持 fail closed，由 `CANVAS_CORS_ORIGINS` 显式白名单兜底。

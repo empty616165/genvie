@@ -186,12 +186,13 @@ func siteTrafficOriginAllowed(c *gin.Context) bool {
 			return true
 		}
 	}
-	requestOrigin, ok := (kernel.ForwardedRequest{
+	// 与全局 CORS 共用同源判定：转发头重建 + 部署者声明的对外地址。
+	// 这个公开写入口不把 * 或任意转发 Host 当作明确授权。
+	return (kernel.ForwardedRequest{
 		TLS:            c.Request.TLS != nil,
 		RemoteAddr:     c.Request.RemoteAddr,
 		Host:           c.Request.Host,
 		ForwardedHost:  c.GetHeader("X-Forwarded-Host"),
 		ForwardedProto: c.GetHeader("X-Forwarded-Proto"),
-	}).Origin()
-	return ok && kernel.CompareOrigin(normalizedOrigin, requestOrigin)
+	}).SameOriginAsRequest(normalizedOrigin)
 }

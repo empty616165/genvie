@@ -204,6 +204,40 @@ func TestAllowedOriginConfiguredListDoesNotFallbackToArbitraryLocalhost(t *testi
 	}
 }
 
+// CDN/ESA 终止 TLS 且不下发 X-Forwarded-Proto 时，来源只能重建为 http；
+// 部署者声明的对外地址应当作为可信同源候选，否则 https 站点一律 403。
+func TestAllowedOriginUsesConfiguredPublicOrigin(t *testing.T) {
+	t.Setenv("CANVAS_CORS_ORIGINS", "")
+	t.Setenv("CANVAS_PUBLIC_BASE_URL", "https://canvas.example.com")
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = httptest.NewRequest("GET", "http://backend/api/auth/settings", nil)
+	context.Request.RemoteAddr = "172.18.0.5:52000"
+	context.Request.Header.Set("X-Forwarded-Host", "canvas.example.com")
+	if !allowedOrigin(context, "https://canvas.example.com") {
+		t.Fatal("configured public origin should be treated as same-origin without forwarded proto")
+	}
+	// 声明值不能放宽成"同主机名即同源"：其他端口仍是不同来源。
+	if allowedOrigin(context, "https://canvas.example.com:8443") {
+		t.Fatal("configured public origin must not authorize another port")
+	}
+	if allowedOrigin(context, "https://evil.example.com") {
+		t.Fatal("configured public origin must not authorize another host")
+	}
+}
+
+// 未配置对外地址时行为保持不变：https 来源在无转发时仍拒绝。
+func TestAllowedOriginWithoutConfiguredPublicOriginStillRejects(t *testing.T) {
+	t.Setenv("CANVAS_CORS_ORIGINS", "")
+	t.Setenv("CANVAS_PUBLIC_BASE_URL", "")
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = httptest.NewRequest("GET", "http://backend/api/auth/settings", nil)
+	context.Request.RemoteAddr = "172.18.0.5:52000"
+	context.Request.Header.Set("X-Forwarded-Host", "canvas.example.com")
+	if allowedOrigin(context, "https://canvas.example.com") {
+		t.Fatal("unconfigured public origin must keep failing closed")
+	}
+}
+
 func TestRedactCanvasSharePath(t *testing.T) {
 	got := redactCanvasSharePath("/api/public/canvas-shares/private-token/resources/resource-1/file")
 	if got != "/api/public/canvas-shares/:token/resources/resource-1/file" {

@@ -236,7 +236,7 @@ docker compose -f docker-compose.local.yml up -d --build
 ## 安全边界
 
 - 首次管理员注册应在受控网络完成，公网部署保持 `CANVAS_REGISTRATION_ENABLED=false`。
-- 设置准确的 `CANVAS_CORS_ORIGINS`，不要在公网使用 `*`；使用 HTTPS 并正确转发代理头。站点跑在非默认端口（如 `8089`）时，访问地址必须完整写进该变量，否则注册和登录会返回「不允许的跨域来源」。TLS 在 CDN/ESA 终止时，边缘必须下发 `X-Forwarded-Proto: https`，否则后端会把来源重建为 `http://<域名>`，与浏览器 Origin 不同源而一律 403，会话 Cookie 也不会带 `Secure`；同时仍要把 `https://<域名>` 写进白名单兜底。
+- 设置准确的 `CANVAS_CORS_ORIGINS`，不要在公网使用 `*`；使用 HTTPS 并正确转发代理头。站点跑在非默认端口（如 `8089`）时，访问地址必须完整写进该变量，否则注册和登录会返回「不允许的跨域来源」。TLS 在 CDN/ESA 终止时，边缘应下发 `X-Forwarded-Proto: https`；即使不下发，后端也会把 `CANVAS_PUBLIC_BASE_URL` 当作同源候选，所以它必须是真实的对外 https 域名（写成内网 IP 时会让 https 站点仍被拒，同时上游拿不到本地存储的短时签名链接）。
 - 后端默认拒绝本机、私网和链路本地模型地址。开发时只通过 `CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS` 精确放行可信主机，不要使用全量放行开关。
 - 用户 API Key 不应出现在 URL、日志、错误上报或服务端长期明文存储中；只在可信部署和 HTTPS 链路中使用真实密钥。
 - 后端 `8080` 应留在 Compose 网络内，不要直接暴露到公网；限制 `.env`、数据库、上传目录、备份和 `.settings-key` 的权限。

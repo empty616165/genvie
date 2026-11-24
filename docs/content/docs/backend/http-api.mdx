@@ -12,9 +12,10 @@ description: 信封、错误码与 OpenAPI
 判定顺序（`backend/internal/kernel/origin.go`、`backend/cmd/server/main.go`）：
 
 1. **同源**：`Origin` 与重建的请求来源一致。重建来源由 `X-Forwarded-Proto`、`X-Forwarded-Host` 组合出，并与 `Host` 协同校验；scheme、主机名、端口都要匹配，默认端口（80/443）折叠。
-2. **显式白名单**：`CANVAS_CORS_ORIGINS` 中以逗号分隔的 Origin，逐项归一化后精确匹配。
-3. **隐式 localhost**：白名单为空时仅放行 `localhost`、`127.0.0.1`、`::1`。
-4. `CANVAS_CORS_ORIGINS=*` 放行任意合法 http/https Origin，但会反射 `Access-Control-Allow-Origin` 并附带 `Access-Control-Allow-Credentials: true`，生产禁止使用。
+2. **部署对外地址**：`Origin` 与 `CANVAS_PUBLIC_BASE_URL` 归一化后逐项一致，同样要求 scheme、主机名和端口全等。这个值由部署者显式配置、不来自请求头，用于覆盖 CDN/ESA 终止 TLS 却不下发 `X-Forwarded-Proto` 的情况。
+3. **显式白名单**：`CANVAS_CORS_ORIGINS` 中以逗号分隔的 Origin，逐项归一化后精确匹配。
+4. **隐式 localhost**：白名单为空时仅放行 `localhost`、`127.0.0.1`、`::1`。
+5. `CANVAS_CORS_ORIGINS=*` 放行任意合法 http/https Origin，但会反射 `Access-Control-Allow-Origin` 并附带 `Access-Control-Allow-Credentials: true`，生产禁止使用。
 
 只有直连对端是本机或内网地址时，转发头才参与重建；伪造 `X-Forwarded-Host` 不能把外部 Origin 变成同源。`nginx.conf` 用 `map $http_host $canvas_forwarded_host` 转发含端口的 Host——nginx 的 `$host` 会丢端口，非默认端口部署若不修正会表现为「同源却一直 403」。
 
@@ -26,10 +27,11 @@ description: 信封、错误码与 OpenAPI
 
 浏览器访问 `https://` 站点、TLS 却在 CDN/ESA 终止时，回源到 `web` 容器的 nginx 已是明文 HTTP。若边缘没有下发 `X-Forwarded-Proto`，`nginx.conf` 的 `map $http_x_forwarded_proto $canvas_forwarded_proto` 会回落到 `$scheme`（即 `http`），后端据此把请求来源重建为 `http://<域名>`。结果是浏览器真实 Origin `https://<域名>` 与它 scheme 不同，同源分支永远不命中，即使白名单为空也一律返回 403 `cors_origin_denied`——表现为「网站有证书、域名也没错，但注册/登录就是不允许跨域」。
 
-同一个头也决定会话 Cookie 是否带 `Secure`（`setSessionCookie` 读 `X-Forwarded-Proto`），所以必须同时修掉，不能只靠白名单绕过：
+同一个头也决定会话 Cookie 是否带 `Secure`（`setSessionCookie` 读 `X-Forwarded-Proto`），所以边缘下发该头仍然是最干净的做法。作为代码级兜底，后端还会把 `CANVAS_PUBLIC_BASE_URL` 当作可信的同源候选（`kernel.ConfiguredPublicOrigin`）：它与 `Origin` 归一化后必须 scheme、主机名、端口全等，不会放宽成「同主机名即同源」。因此边缘没有下发该头时，只要把对外地址写成真实的 https 域名，同源判定仍能命中：
 
-1. 在 CDN/ESA 控制台的「回源 / 源站请求头」下发 `X-Forwarded-Proto: https`，让 nginx 转发真实 scheme，同源判定和 `Secure` Cookie 同时恢复。
-2. 无论是否下发该头，都把 https 站点写进 `CANVAS_CORS_ORIGINS`，作为白名单兜底。
+1. 优先在 CDN/ESA 控制台的「回源 / 源站请求头」下发 `X-Forwarded-Proto: https`，让 nginx 转发真实 scheme，`Secure` Cookie 也同时恢复。
+2. 把 `.env` 的 `CANVAS_PUBLIC_BASE_URL` 写成对外 https 域名；它同时供服务器本地存储签名链接、真人认证回调和消费报表使用，写成内网 IP 时上游拿不到 Agent 看图、生成参考图等短时链接。
+3. 无论上述两项如何配置，都建议把 https 站点写进 `CANVAS_CORS_ORIGINS` 作为第三重兜底。
 
 判断线上属于哪一类，先跑只读诊断脚本（只请求无鉴权接口，不改配置）：
 
@@ -45,8 +47,6 @@ SITE_URL=https://canvas.example.com bash scripts/diagnose-cors-origin.sh
 CANVAS_CORS_ORIGINS=https://canvas.example.com,http://39.170.51.205:8089
 CANVAS_PUBLIC_BASE_URL=https://canvas.example.com
 ```
-
-`CANVAS_PUBLIC_BASE_URL` 也必须是浏览器和模型上游都能访问的对外地址。它被服务器本地存储签名链接、真人认证回调和消费报表使用；写成内网 IP 时，上游拿不到 Agent 看图、生成参考图等短时链接。
 
 环境变量在容器创建时注入，改完要 `docker compose up -d backend` 重建，只重启容器不会重新读取 `.env`。
 

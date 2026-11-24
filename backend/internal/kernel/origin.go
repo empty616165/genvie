@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -78,6 +79,36 @@ func CompareOrigin(left, right string) bool {
 		return false
 	}
 	return normalizedLeft == normalizedRight
+}
+
+// ConfiguredPublicOrigin 返回部署者声明的对外来源（CANVAS_PUBLIC_BASE_URL）。
+// TLS 在 CDN/ESA 终止、边缘又不下发 X-Forwarded-Proto 时，重建出的 scheme 只能是 http，
+// 与浏览器的 https Origin 不同源。这个值由部署者显式配置、不来自请求头，可以作为可信的同源候选；
+// 它仍然要求 scheme、主机名和端口逐项一致，不放宽成"同主机名即同源"。
+func ConfiguredPublicOrigin() (string, bool) {
+	origin, err := NormalizeOrigin(os.Getenv("CANVAS_PUBLIC_BASE_URL"))
+	if err != nil {
+		return "", false
+	}
+	return origin, true
+}
+
+// SameOriginAsRequest 判断 origin 是否属于本请求的对外来源。
+// 先按请求头重建；再与部署者声明的对外地址（CANVAS_PUBLIC_BASE_URL）比较。
+// 两者都要求 scheme、主机名、端口逐项一致，不做"同主机名即同源"的放宽：
+// 同主机的其他端口仍属不同 Origin，但共享同一份 Cookie。
+func (r ForwardedRequest) SameOriginAsRequest(origin string) bool {
+	normalized, err := NormalizeOrigin(origin)
+	if err != nil {
+		return false
+	}
+	if rebuilt, ok := r.Origin(); ok && normalized == rebuilt {
+		return true
+	}
+	if configured, ok := ConfiguredPublicOrigin(); ok && normalized == configured {
+		return true
+	}
+	return false
 }
 
 // ForwardedRequest 是重建请求对外来源所需的元数据，不依赖 gin。
