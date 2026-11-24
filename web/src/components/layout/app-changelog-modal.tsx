@@ -2,7 +2,8 @@ import { ScrollText } from "lucide-react";
 import { lazy, Suspense, useState, type CSSProperties, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useAppearanceStore } from "@/stores/use-appearance-store";
-import { updateAnnouncementVersion } from "@/lib/update-announcement";
+import { useUserStore } from "@/stores/use-user-store";
+import { canViewUpdateLog, updateAnnouncementVersion } from "@/lib/update-announcement";
 import { refreshPublicAppearance } from "@/services/appearance-bootstrap";
 
 const AppChangelogDialog = lazy(() => import("@/components/layout/app-changelog-dialog").then((module) => ({ default: module.AppChangelogDialog })));
@@ -24,7 +25,9 @@ export function AppChangelogButton({ className, style, showVersion = false, show
     const { t } = useTranslation();
     const [open, setOpen] = useState(false);
     const updates = useAppearanceStore((state) => state.appearance.updates);
+    const role = useUserStore((state) => state.user?.role);
     const title = updates?.enabled ? t("account.layout.changelog.announcements") : t("account.layout.changelog.log");
+    if (!canViewUpdateLog(role)) return null;
 
     return (
         <>

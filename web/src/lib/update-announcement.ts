@@ -11,6 +11,10 @@ export type UpdateRelease = { id: string; version: string; title: string; date: 
 export type UpdateAnnouncement = { enabled: boolean; currentVersion: string; releases: UpdateRelease[] };
 export const DEFAULT_UPDATE_ANNOUNCEMENT: UpdateAnnouncement = { enabled: false, currentVersion: "", releases: [] };
 
+export function canViewUpdateLog(role?: string | null) {
+    return role === "admin";
+}
+
 export function normalizeUpdateAnnouncement(value?: UpdateAnnouncement | null): UpdateAnnouncement {
     return { ...DEFAULT_UPDATE_ANNOUNCEMENT, ...value, releases: Array.isArray(value?.releases) ? value.releases : [] };
 }

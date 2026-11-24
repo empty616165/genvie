@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { createElement, Suspense } from "react";
 import { renderToString } from "react-dom/server";
 import { preloadableLazy } from "../src/lib/preloadable-lazy";
+import { canViewUpdateLog } from "../src/lib/update-announcement";
 
 function source(path: string) {
     return readFileSync(resolve(import.meta.dir, path), "utf8");
@@ -119,6 +120,19 @@ describe("workspace route loading", () => {
         expect(changelogButton).toContain('lazy(() => import("@/components/layout/app-changelog-dialog")');
         expect(changelogButton).not.toContain('from "react-markdown"');
         expect(announcements).toContain('lazy(() => import("@/components/ui/aceternity/announcement-timeline-modal")');
+    });
+
+    test("shows the update log entry only to administrators", () => {
+        const changelogButton = source("../src/components/layout/app-changelog-modal.tsx");
+        const sidebar = source("../src/components/layout/workspace-sidebar-footer.tsx");
+        const accountMenu = source("../src/components/layout/workspace-account-menu.tsx");
+
+        expect(canViewUpdateLog("admin")).toBe(true);
+        expect(canViewUpdateLog("user")).toBe(false);
+        expect(canViewUpdateLog()).toBe(false);
+        expect(changelogButton).toContain("if (!canViewUpdateLog(role)) return null;");
+        expect(sidebar).toContain("canViewUpdateLog(user.role)");
+        expect(accountMenu).toContain("canViewUpdateLog(user.role)");
     });
 
     test("uses a quiet brand loader for initial hydration", () => {
