@@ -22,11 +22,31 @@ description: 信封、错误码与 OpenAPI
 
 端口在链路上被剥掉时（例如 CDN 回源只传主机名），后端无法还原真实端口，只能用 `CANVAS_CORS_ORIGINS` 显式列出完整 Origin 兜底。可从拒绝日志 `cors origin denied` 的 `forwardedHost` 确认是否出现端口丢失。正确做法是让最外层代理保留客户端 Host，或改用带端口的转发 Host。
 
+### TLS 终止在 CDN 或 ESA 时的 scheme 丢失
+
+浏览器访问 `https://` 站点、TLS 却在 CDN/ESA 终止时，回源到 `web` 容器的 nginx 已是明文 HTTP。若边缘没有下发 `X-Forwarded-Proto`，`nginx.conf` 的 `map $http_x_forwarded_proto $canvas_forwarded_proto` 会回落到 `$scheme`（即 `http`），后端据此把请求来源重建为 `http://<域名>`。结果是浏览器真实 Origin `https://<域名>` 与它 scheme 不同，同源分支永远不命中，即使白名单为空也一律返回 403 `cors_origin_denied`——表现为「网站有证书、域名也没错，但注册/登录就是不允许跨域」。
+
+同一个头也决定会话 Cookie 是否带 `Secure`（`setSessionCookie` 读 `X-Forwarded-Proto`），所以必须同时修掉，不能只靠白名单绕过：
+
+1. 在 CDN/ESA 控制台的「回源 / 源站请求头」下发 `X-Forwarded-Proto: https`，让 nginx 转发真实 scheme，同源判定和 `Secure` Cookie 同时恢复。
+2. 无论是否下发该头，都把 https 站点写进 `CANVAS_CORS_ORIGINS`，作为白名单兜底。
+
+判断线上属于哪一类，先跑只读诊断脚本（只请求无鉴权接口，不改配置）：
+
+```bash
+SITE_URL=https://canvas.example.com bash scripts/diagnose-cors-origin.sh
+```
+
+源站直连 `http://<站点IP>:<端口>/api/auth/settings` 时 `Origin: https://<域名>` 返回 403、`Origin: http://<域名>` 返回 200，而带 `X-Forwarded-Proto: https` 请求公网地址返回 200，即确认边缘未下发该头。拒绝日志里的 `forwardedProto` 为空也指向同一原因。
+
 非默认端口或域名部署必须在 `.env` 显式写全地址，例如：
 
 ```env
-CANVAS_CORS_ORIGINS=http://39.170.51.205:8089,http://demo.example.com:8089
+CANVAS_CORS_ORIGINS=https://canvas.example.com,http://39.170.51.205:8089
+CANVAS_PUBLIC_BASE_URL=https://canvas.example.com
 ```
+
+`CANVAS_PUBLIC_BASE_URL` 也必须是浏览器和模型上游都能访问的对外地址。它被服务器本地存储签名链接、真人认证回调和消费报表使用；写成内网 IP 时，上游拿不到 Agent 看图、生成参考图等短时链接。
 
 环境变量在容器创建时注入，改完要 `docker compose up -d backend` 重建，只重启容器不会重新读取 `.env`。
 

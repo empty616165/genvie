@@ -262,7 +262,7 @@ func cors() (gin.HandlerFunc, error) {
 	return func(c *gin.Context) {
 		origin := strings.TrimSpace(c.GetHeader("Origin"))
 		if origin != "" && !allowedOriginWithPolicy(c, origin, policy) {
-			slog.Warn("cors origin denied", "origin", origin, "requestHost", c.Request.Host, "forwardedHost", c.GetHeader("X-Forwarded-Host"))
+			slog.Warn("cors origin denied", "origin", origin, "requestHost", c.Request.Host, "forwardedHost", c.GetHeader("X-Forwarded-Host"), "forwardedProto", c.GetHeader("X-Forwarded-Proto"))
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"code": http.StatusForbidden, "data": nil, "msg": "不允许的跨域来源", "reason": "cors_origin_denied"})
 			return
 		}

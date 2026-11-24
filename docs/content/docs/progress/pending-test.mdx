@@ -12,7 +12,9 @@ description: 当前项目已实现功能的手工验证清单与未确认边界
 - [ ] 直连后端端口（不经 nginx）伪造 `X-Forwarded-Host` 无法把外部 Origin 变成同源。
 - [ ] 伪造 `X-Forwarded-Port` 不再生效：对同一主机名换任意端口（如 `:9999`、`:12345`）附加同值 `X-Forwarded-Port` 后仍返回 403。v1.8.7.13 曾信任该头，任何同域名端口都能借此读取登录态响应，属已修复的安全缺陷。
 - [ ] 访问统计（`POST /api/traffic/events`）在 8089 端口正常入库，源站页面浏览数不再因端口丢失被拒。
-- [ ] 阿里云 ESA/CDN 后面的部署（如 `http://vdo.llmhub.xin:8880`，源站 `192.168.19.28`）：回源若只传主机名、剥掉端口，同源判定仍会失败；需在该源站 `.env` 的 `CANVAS_CORS_ORIGINS` 显式写入 `http://vdo.llmhub.xin:8880`，或在 ESA 控制台把回源 Host 改成保留客户端端口后验证自动放行。
+- [ ] 阿里云 ESA/CDN 后面的部署（如 `https://vdo.llmhub.xin`，源站 `192.168.19.28:1888`）：边缘若不下发 `X-Forwarded-Proto`，后端会把来源重建为 `http://<域名>`，与浏览器的 `https://` 不同源而一律 403（本机实测源站直连 `Origin: https://vdo.llmhub.xin` 403、`Origin: http://vdo.llmhub.xin` 200，公网加 `X-Forwarded-Proto: https` 200）。修复为在 ESA 控制台回源请求头下发 `X-Forwarded-Proto: https`，并在源站 `.env` 的 `CANVAS_CORS_ORIGINS` 写入 `https://vdo.llmhub.xin` 兜底；两项都要做，前者同时决定会话 Cookie 是否带 `Secure`。
+- [ ] 上述 https 站点验证：`/api/auth/settings` 与登录接口返回 200、响应头 `Access-Control-Allow-Origin` 等于浏览器 Origin、`Set-Cookie` 带 `Secure`；未写入白名单的其他域名仍返回 403 `cors_origin_denied`。
+- [ ] 回源若只传主机名、剥掉端口，同源判定仍会失败；需在该源站 `.env` 的 `CANVAS_CORS_ORIGINS` 显式写入完整 Origin，或在 ESA 控制台把回源 Host 改成保留客户端端口后验证自动放行。
 
 ## HTTP 访问下的生成结果接回
 

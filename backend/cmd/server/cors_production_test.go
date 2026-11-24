@@ -35,6 +35,13 @@ func TestRegistrationCORSOnNonDefaultPort(t *testing.T) {
 		{"client forwarded port ignored", "", "http://demo.deep-learn.com:9999", "demo.deep-learn.com", "demo.deep-learn.com", "9999", "http", "172.18.0.5:52000", false},
 		// 请求 Host 自带端口时，转发 Host 不得改写端口。
 		{"forwarded host cannot rewrite host port", "", "http://demo.deep-learn.com:9999", "demo.deep-learn.com:1888", "demo.deep-learn.com:9999", "", "http", "172.18.0.5:52000", false},
+		// TLS 在 CDN/ESA 终止：回源是明文，边缘未下发 X-Forwarded-Proto 时来源重建为 http，
+		// 浏览器的 https Origin 因此不同源，只能靠显式白名单兜底。
+		{"https origin without forwarded proto", "", "https://canvas.example.com", "canvas.example.com", "canvas.example.com", "", "http", "172.18.0.5:52000", false},
+		{"https origin whitelisted", "https://canvas.example.com", "https://canvas.example.com", "canvas.example.com", "canvas.example.com", "", "http", "172.18.0.5:52000", true},
+		{"https origin forwarded proto", "", "https://canvas.example.com", "canvas.example.com", "canvas.example.com", "", "https", "172.18.0.5:52000", true},
+		// 补上转发 scheme 后仍不能用其他端口冒充同源。
+		{"https other port with forwarded proto", "", "https://canvas.example.com:8443", "canvas.example.com", "canvas.example.com", "", "https", "172.18.0.5:52000", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Setenv("CANVAS_CORS_ORIGINS", test.env)
