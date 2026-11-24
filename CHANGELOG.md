@@ -1,4 +1,12 @@
 # CHANGELOG
+## v1.8.8.0
+- 上游同步：合并 `ddcat-ai/open-ai-canvas` 的世界引擎后续修复、生成恢复和安全更新，同时保留造境仓库的更新器、CORS、品牌和部署链路。
+- Agent 与存储：新增平台 Agent 热历史池、终态 gzip 冷归档、会话删除和整理接口，并回填升级前的历史账本；数据库 Schema 从 109 升至 110。
+- 画布与创作：兼容历史生成合同，恢复已落库但任务快照缺少结果地址的视频；媒体提及显示节点名称，慢网页面加载与后台预取互不影响。
+- 渠道与插件：修复代理出站时本机 DNS 不可用的问题，同时继续拦截本机、内网和链路本地地址；未指定插件版本时绑定当前发行版并固定任务快照；更新 Seedance、NewAPI 和 WaveSpeed 协议兼容。
+- Web 与构建：修复存储设置服务器地址回填、旧版登录恢复、资源预加载及 Vite 8 helper 兼容问题。
+- 升级说明：升级前备份数据库和后端数据目录（含 `plugin_registry.json`、`plugin-packages/` 与 `.settings-key`），执行 Schema 109→110 迁移并同步更新 Web 与 Backend。Host Updater 会在停服后自动备份、迁移并校验，失败时恢复旧版本。
+
 ## v1.8.7.15
 - 跨域来源：新增代码级同源兜底。TLS 在 CDN/ESA 终止、边缘又不下发 `X-Forwarded-Proto` 时，后端只能把来源重建为 `http://<域名>`，浏览器的 `https://` Origin 因 scheme 不等被一律拒绝（实测 `https://vdo.llmhub.xin` 403，源站直连 `http://` 来源 200）。现后端把 `CANVAS_PUBLIC_BASE_URL` 也当作可信同源候选，它与 `Origin` 归一化后必须 scheme、主机名、端口全等，不会放宽成「同主机名即同源」。该值由部署者显式配置、不来自请求头，客户端无法伪造；未配置时行为与之前一致（fail closed）。`GET /api/traffic/events` 复用同一判定。
 - 跨域来源：拒绝日志补 `forwardedProto` 字段，可直接从日志判断是否为 scheme 丢失，`scripts/diagnose-cors-origin.sh` 提供只读四项诊断。`cors_production_test` 与 `main_test` 覆盖「https 来源无转发头」「声明地址放行」「其他端口/域名仍拒绝」「未配置时仍 fail closed」。
