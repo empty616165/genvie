@@ -1,6 +1,7 @@
 # CHANGELOG
-## Unreleased
+## v1.8.8.2
 - 灵感同步：Docker 部署会把 `.env` 中的 `HTTP_PROXY`、`HTTPS_PROXY` 和 `NO_PROXY` 传入 backend，修复服务器已配置代理但容器仍直连 GitHub、导致 YouMind 同步连接重置的问题。
+- 升级说明：本版本无数据库 Schema 变化。升级后在部署 `.env` 配置可用的 `HTTPS_PROXY` 和 `NO_PROXY`，再重建 backend；如果代理在宿主机，容器不能使用 `127.0.0.1`。
 
 ## v1.8.8.1
 - 更新日志：普通用户的工作台侧栏和账号菜单不再显示更新日志入口；管理员仍可从工作台和后台查看内置日志或自定义更新公告。
